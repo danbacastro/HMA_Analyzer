@@ -22,6 +22,8 @@ import math
 # Helpers
 # =========================
 
+EMPTY_LABEL = "(sem informação)"
+
 def _strip_accents(text: str) -> str:
     if not isinstance(text, str):
         return text
@@ -58,7 +60,7 @@ def infer_year_from_filename(name: str) -> Optional[int]:
     m = re.search(r'((?:19|20)\d{2})', name)
     return int(m.group(1)) if m else None
 
-# Parse PT-BR "dia mês" (com/sem espaço) + fallback dd/mm
+# Parse PT-BR "dia mês" + fallback dd/mm
 MESES_MAP = {
     "janeiro":1, "fevereiro":2, "marco":3, "março":3, "abril":4, "maio":5, "junho":6,
     "julho":7, "agosto":8, "setembro":9, "outubro":10, "novembro":11, "dezembro":12
@@ -101,12 +103,74 @@ def sync_multiselect_state(key: str, options: List, select_all_on_change: bool =
         sel = st.session_state.get(key, cur_opts.copy())
         st.session_state[key] = [x for x in sel if x in cur_opts]
 
+# strings seguras para contagens/agrupamentos
+def safe_series_strings(s: pd.Series, empty_label=EMPTY_LABEL) -> pd.Series:
+    out = s.astype(str)
+    out = out.replace(["nan", "NaN", "None", "NONE"], "").str.strip()
+    out = out.mask(out.eq(""), other=empty_label)
+    return out
+
+# =========================
+# Paletas consistentes (cores fixas por categoria)
+# =========================
+
+def _get_palette_colors(n: int) -> List[str]:
+    try:
+        from plotly.colors import qualitative as q
+        bank = []
+        # concatenamos várias paletas para garantir bastante cores
+        bank += list(getattr(q, "Set3", []))
+        bank += list(getattr(q, "Plotly", []))
+        bank += list(getattr(q, "Safe", []))
+        bank += list(getattr(q, "Pastel", []))
+        bank += list(getattr(q, "Bold", []))
+        bank += list(getattr(q, "D3", []))
+        if len(bank) < n:
+            bank = (bank * ((n // len(bank)) + 1))[:n]
+        else:
+            bank = bank[:n]
+        return bank
+    except Exception:
+        # fallback genérico
+        base = ["#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
+                "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf"]
+        if len(base) < n:
+            base = (base * ((n // len(base)) + 1))[:n]
+        return base[:n]
+
+def _ensure_color_map(state_key: str, categories: List[str]) -> Dict[str, str]:
+    """Garante um dict estável categoria->cor em session_state[state_key]."""
+    if state_key not in st.session_state:
+        st.session_state[state_key] = {}
+    cmap = st.session_state[state_key]
+    # mantém cores já atribuídas
+    missing = [c for c in categories if c not in cmap]
+    if missing:
+        colors = _get_palette_colors(len(categories) + 5)  # margem
+        # evita reassinar cores existentes
+        used = set(cmap.values())
+        for cat in missing:
+            # pega a primeira cor ainda não usada
+            color = next((col for col in colors if col not in used), None)
+            if color is None:
+                # se esgotou, apenas cíclica
+                color = colors[len(used) % len(colors)]
+            cmap[cat] = color
+            used.add(color)
+        st.session_state[state_key] = cmap
+    # se alguma categoria saiu, mantemos o mapeamento (para estabilidade visual)
+    return cmap
+
+def color_map_for_series(series: pd.Series, state_key: str) -> Dict[str, str]:
+    cats = sorted([c for c in series.dropna().astype(str).unique().tolist()])
+    return _ensure_color_map(state_key, cats)
+
 # =========================
 # Streamlit – UI
 # =========================
 
-st.set_page_config(page_title="HMA SCIH — Analytics & Report", layout="wide")
-st.title("🧫 HMA SCIH — Analytics & Report")
+st.set_page_config(page_title="SCIH HMA — Analytics & Report", layout="wide")
+st.title("🧫 SCIH HMA  — Analytics & Report")
 
 st.markdown(
     """
@@ -150,6 +214,9 @@ with st.sidebar:
 
     st.subheader("Pizzas")
     show_pcts = st.checkbox("Mostrar % nos Gráficos de Pizza", value=True, key="show_pcts")
+
+    # Controlar exibição da categoria vazia
+    show_empty = st.checkbox(f"Incluir '{EMPTY_LABEL}' nas análises", value=False, key="show_empty")
 
     st.markdown("---")
     st.subheader("Excluir Categorias")
@@ -235,25 +302,15 @@ with st.expander("Prévia já nomeada (20 linhas)"):
     st.dataframe(raw.head(20), use_container_width=True)
 
 # =========================
-# Tradução + Mapeamentos em tempo real
+# Tradução (CSV base) + preparação
 # =========================
 
 trans_tbl = read_translation(trans_file)
-map_pad  = dict(zip(trans_tbl["resultado_norm"], trans_tbl["padronizado"].astype(str))) if not trans_tbl.empty else {}
-map_tipo = dict(zip(trans_tbl["resultado_norm"], trans_tbl["tipo_micro"].astype(str))) if not trans_tbl.empty else {}
+map_pad_base  = dict(zip(trans_tbl["resultado_norm"], trans_tbl["padronizado"].astype(str))) if not trans_tbl.empty else {}
+map_tipo_base = dict(zip(trans_tbl["resultado_norm"], trans_tbl["tipo_micro"].astype(str))) if not trans_tbl.empty else {}
 
-# dicionários temporários de sessão
-rt_pad  = st.session_state.get("runtime_map_pad",  {})
-rt_tipo = st.session_state.get("runtime_map_tipo", {})
-
-# combinado (CSV + runtime)
-map_pad_combined  = {**map_pad,  **rt_pad}
-map_tipo_combined = {**map_tipo, **rt_tipo}
-
-# Padronização
+# Normaliza os textos da planilha bruta (vamos usar para padronizar DEPOIS do card de não mapeados)
 res_norm = raw["resultado_raw"].map(normalize_text)
-raw["resultado_std"] = res_norm.map(map_pad_combined).fillna(raw["resultado_raw"])
-raw["tipo_micro"]     = res_norm.map(map_tipo_combined).fillna("")
 
 # =========================
 # Filtros – Data e Exclusão
@@ -289,51 +346,13 @@ mask_year  = raw["ano"].isin(sel_anos) if len(sel_anos) > 0 else pd.Series([True
 mask_month = raw["mes_num"].isin(sel_meses_num) if len(sel_meses_num) > 0 else pd.Series([True]*len(raw), index=raw.index)
 mask_date  = mask_year & mask_month
 
-present_vals = raw.loc[mask_date, "resultado_std"].astype(str).fillna("").tolist()
-suggest_exclude = sorted({
-    v for v in present_vals
-    if any(k in normalize_text(v) for k in ["negativ", "contamin"])
-})
-exclude_list = exclude_placeholder.multiselect(
-    "Excluir resultados (aplicado nos gráficos e tabelas)",
-    options=sorted(raw["resultado_std"].astype(str).unique()),
-    default=suggest_exclude,
-    key="select_exclude"
-)
-
-base    = raw[mask_date].copy()
-df_plot = base[~base["resultado_std"].isin(exclude_list)] if exclude_list else base
-
-def _format_period(sel_anos_list, sel_meses_nums):
-    anos_all = sorted(raw["ano"].dropna().astype(int).unique().tolist())
-    meses_all = sorted([m for m in raw["mes_num"].dropna().unique().tolist() if 1 <= m <= 12])
-    anos = sel_anos_list if sel_anos_list else anos_all
-    meses = sel_meses_nums if sel_meses_nums else meses_all
-    meses_lbl = ", ".join(MESES_PT.get(m, str(m)) for m in meses)
-    anos_lbl = ", ".join(str(a) for a in anos)
-    if meses_lbl and anos_lbl:
-        return f"{meses_lbl} de {anos_lbl}"
-    return anos_lbl or meses_lbl or "todos os períodos"
-
-periodo_lbl = _format_period(sel_anos, sel_meses_num)
-st.markdown(
-    f"""
-    <div style="padding:.5rem .75rem;border-radius:8px;
-               background:#F1F5F9;display:inline-block;
-               font-size:0.9rem;">
-      <b>Período ativo:</b> {periodo_lbl} • <b>Registros:</b> {len(base)}
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
 # =========================
-# Não mapeados + Sugestões
+# Card: NÃO Mapeados (antes da padronização final)
 # =========================
 
 unmatched = (
     pd.DataFrame({"resultado": raw["resultado_raw"], "resultado_norm": res_norm})
-    [~res_norm.isin(set(map_pad.keys()))]  # compara com o CSV base para sugerir o que falta consolidar
+    [~res_norm.isin(set(map_pad_base.keys()))]
     .drop_duplicates(subset=["resultado_norm"])
     .reset_index(drop=True)
 )
@@ -352,11 +371,12 @@ def suggest_matches(unmatched_df: pd.DataFrame, mapping_dict: Dict[str, str], li
     out["sugestoes"] = sug
     return out
 
-unmatched_suggested = suggest_matches(unmatched, map_pad)
+unmatched_suggested = suggest_matches(unmatched, map_pad_base)
 
 st.header("🔎 Resultados não Mapeados")
 if unmatched_suggested.empty:
     st.success("Todos os resultados foram mapeados ✅")
+    new_map = pd.DataFrame(columns=["resultado","padronizado","tipo_micro","resultado_norm"])
 else:
     st.warning("Existem resultados sem padronização. Atualize o Arquivo de Padronização de Nomes.")
     editable = unmatched_suggested.copy()
@@ -370,28 +390,17 @@ else:
         key="editor_unmatched",
     )
 
-    # novos mapeamentos digitados
-    new_map = edited.dropna(subset=["padronizado"]).copy()
-    if "tipo_micro" not in new_map.columns:
-        new_map["tipo_micro"] = ""
-    new_map = new_map[["resultado", "padronizado", "tipo_micro"]]
-    new_map["resultado_norm"] = new_map["resultado"].map(normalize_text)
-    new_map = new_map.drop_duplicates(subset=["resultado_norm"], keep="last")
+    new_map = edited.copy()
+    new_map["padronizado"] = new_map["padronizado"].astype(str)
+    new_map["tipo_micro"]  = new_map["tipo_micro"].astype(str) if "tipo_micro" in new_map.columns else ""
+    new_map = new_map[new_map["padronizado"].str.strip() != ""]
+    if not new_map.empty:
+        new_map = new_map[["resultado", "padronizado", "tipo_micro"]]
+        new_map["resultado_norm"] = new_map["resultado"].map(normalize_text)
+        new_map = new_map.drop_duplicates(subset=["resultado_norm"], keep="last")
+    else:
+        new_map = pd.DataFrame(columns=["resultado","padronizado","tipo_micro","resultado_norm"])
 
-    # >>> APLICAÇÃO IMEDIATA (sem botão): atualiza runtime a cada edição
-    if "runtime_map_pad" not in st.session_state:
-        st.session_state["runtime_map_pad"] = {}
-    if "runtime_map_tipo" not in st.session_state:
-        st.session_state["runtime_map_tipo"] = {}
-    # zera só as chaves que estão sendo editadas (para não apagar runtime antigos de outras entradas)
-    for _, r in new_map.iterrows():
-        k = normalize_text(str(r["resultado"]))
-        st.session_state["runtime_map_pad"][k] = str(r["padronizado"])
-        tm = str(r.get("tipo_micro", "")).strip()
-        if tm:
-            st.session_state["runtime_map_tipo"][k] = tm
-
-    # botões de download (novos e template)
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         if not new_map.empty:
@@ -410,21 +419,17 @@ else:
         buf2 = io.StringIO()
         template.to_csv(buf2, index=False)
         st.download_button(
-            "⬇️ Baixar template para tradução (CSV)",
-            data=buf2.getvalue(),
-            file_name=f"template_traducao_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-        )
-
-    # >>> 3º BOTÃO: tradução ATUALIZADA (append + dedup) — sem card extra
+                "⬇️ Baixar template para tradução (CSV)",
+                data=buf2.getvalue(),
+                file_name=f"template_traducao_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+            )
     with col_c:
         if trans_tbl is None or trans_tbl.empty:
             base_trad = pd.DataFrame(columns=["resultado","padronizado","tipo_micro"])
         else:
             base_trad = trans_tbl[["resultado","padronizado","tipo_micro"]].copy().fillna("")
-        novos_trad = pd.DataFrame(columns=["resultado","padronizado","tipo_micro"])
-        if not new_map.empty:
-            novos_trad = new_map[["resultado","padronizado","tipo_micro"]].copy().fillna("")
+        novos_trad = new_map[["resultado","padronizado","tipo_micro"]].copy().fillna("") if not new_map.empty else pd.DataFrame(columns=["resultado","padronizado","tipo_micro"])
         merged_trad = pd.concat([base_trad, novos_trad], ignore_index=True)
         if not merged_trad.empty:
             merged_trad["resultado_norm"] = merged_trad["resultado"].map(normalize_text)
@@ -441,12 +446,80 @@ else:
             key="btn_download_traducao_atualizada"
         )
 
-    # opção de limpar mapeamentos temporários
-    if st.button("Limpar mapeamentos temporários desta sessão", key="btn_clear_runtime"):
-        st.session_state.pop("runtime_map_pad", None)
-        st.session_state.pop("runtime_map_tipo", None)
-        st.info("Mapeamentos temporários limpos.")
-        st.rerun()
+# =========================
+# Padronização final (CSV base + runtime)
+# =========================
+
+rt_pad  = st.session_state.get("runtime_map_pad",  {})
+rt_tipo = st.session_state.get("runtime_map_tipo", {})
+
+if not new_map.empty:
+    if "runtime_map_pad" not in st.session_state:
+        st.session_state["runtime_map_pad"] = {}
+    if "runtime_map_tipo" not in st.session_state:
+        st.session_state["runtime_map_tipo"] = {}
+    for _, r in new_map.iterrows():
+        k = normalize_text(str(r["resultado"]))
+        st.session_state["runtime_map_pad"][k] = str(r["padronizado"])
+        tm = str(r.get("tipo_micro", "")).strip()
+        if tm:
+            st.session_state["runtime_map_tipo"][k] = tm
+    rt_pad  = st.session_state["runtime_map_pad"]
+    rt_tipo = st.session_state["runtime_map_tipo"]
+
+map_pad_combined  = {**map_pad_base,  **rt_pad}
+map_tipo_combined = {**map_tipo_base, **rt_tipo}
+
+# Não mapeados viram "(sem informação)"
+std_series = res_norm.map(map_pad_combined)
+raw["resultado_std"] = std_series.where(
+    std_series.notna() & (std_series.astype(str).str.strip() != ""),
+    other=EMPTY_LABEL
+)
+raw["tipo_micro"] = res_norm.map(map_tipo_combined).fillna("")
+
+# Recalcula bases filtradas
+present_vals = raw.loc[mask_date, "resultado_std"].astype(str).fillna("").tolist()
+suggest_exclude = sorted({v for v in present_vals if any(k in normalize_text(v) for k in ["negativ", "contamin"])})
+
+options_ex = sorted(set(safe_series_strings(raw["resultado_std"]).tolist()))
+if not show_empty and EMPTY_LABEL in options_ex and EMPTY_LABEL not in suggest_exclude:
+    suggest_exclude.append(EMPTY_LABEL)
+default_ex = [x for x in suggest_exclude if x in options_ex]
+
+exclude_list = exclude_placeholder.multiselect(
+    "Excluir resultados (aplicado nos gráficos e tabelas)",
+    options=options_ex,
+    default=default_ex,
+    key="select_exclude"
+)
+
+base    = raw[mask_date].copy()
+df_plot = base[~safe_series_strings(base["resultado_std"]).isin(exclude_list)] if exclude_list else base
+
+# Badge do período
+def _format_period(sel_anos_list, sel_meses_nums):
+    anos_all = sorted(raw["ano"].dropna().astype(int).unique().tolist())
+    meses_all = sorted([m for m in raw["mes_num"].dropna().unique().tolist() if 1 <= m <= 12])
+    anos = sel_anos_list if sel_anos_list else anos_all
+    meses = sel_meses_nums if sel_meses_nums else meses_all
+    meses_lbl = ", ".join(MESES_PT.get(m, str(m)) for m in meses)
+    anos_lbl = ", ".join(str(a) for a in anos)
+    if meses_lbl and anos_lbl:
+        return f"{meses_lbl} de {anos_lbl}"
+    return anos_lbl or meses_lbl or "todos os períodos"
+
+periodo_lbl = _format_period(st.session_state.get("f_anos", []), [MESES_MAP.get(x, x) if isinstance(x, str) else x for x in st.session_state.get("f_meses", [])])
+st.markdown(
+    f"""
+    <div style="padding:.5rem .75rem;border-radius:8px;
+               background:#F1F5F9;display:inline-block;
+               font-size:0.9rem;">
+      <b>Período ativo:</b> {periodo_lbl} • <b>Registros:</b> {len(base)}
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # =========================
 # GRÁFICOS – ORDEM
@@ -459,15 +532,19 @@ def apply_yaxis(fig, y_max_current: int):
     fig.update_layout(yaxis=dict(range=[0, y_max]))
     return fig
 
-# 1) TOP RESULTADOS (sem negativos/contaminantes)
-present_vals_base = base["resultado_std"].astype(str).fillna("").tolist()
-auto_exclude_top = sorted({
-    v for v in present_vals_base
-    if any(k in normalize_text(v) for k in ["negativ", "contamin"])
-})
-top_df = base[~base["resultado_std"].isin(auto_exclude_top)].copy()
+# Paletas consistentes (c-maps)
+cmap_resultado = color_map_for_series(safe_series_strings(df_plot["resultado_std"]), "cmap_resultado_std")
+cmap_setor     = color_map_for_series(df_plot["setor"], "cmap_setor")
 
-counts_top = top_df["resultado_std"].value_counts().reset_index()
+# 1) TOP RESULTADOS (sem negativos/contaminantes)
+present_vals_base = safe_series_strings(base["resultado_std"])
+auto_exclude_top = sorted({v for v in present_vals_base if any(k in normalize_text(v) for k in ["negativ", "contamin"])})
+top_df = base[~safe_series_strings(base["resultado_std"]).isin(auto_exclude_top)].copy()
+
+vals_top = safe_series_strings(top_df["resultado_std"])
+if not show_empty:
+    vals_top = vals_top[vals_top != EMPTY_LABEL]
+counts_top = vals_top.value_counts().reset_index()
 counts_top.columns = ["resultado_padronizado", "n"]
 counts_top_f = counts_top[counts_top["n"] >= min_count]
 
@@ -479,7 +556,15 @@ with col1:
 with col2:
     try:
         import plotly.express as px
-        fig = px.bar(counts_top_f.head(top_n), x="resultado_padronizado", y="n", title=f"{top_n} Micro-organismos Prevalentes")
+        # aplicar paleta dos resultados
+        fig = px.bar(
+            counts_top_f.head(top_n),
+            x="resultado_padronizado", y="n",
+            title=f"{top_n} Micro-organismos Prevalentes",
+            color="resultado_padronizado",
+            color_discrete_map=cmap_resultado
+        )
+        fig.update_layout(showlegend=False)
         n_groups, n_bars_per_group = 1, max(1, counts_top_f.head(top_n).shape[0])
         bargap, bargroupgap = dynamic_gaps(n_groups, n_bars_per_group)
         fig.update_layout(bargap=bargap, bargroupgap=bargroupgap)
@@ -509,12 +594,16 @@ else:
 
     if "(Todos)" in st.session_state["barras_setor_focus"] or len(st.session_state["barras_setor_focus"]) == 0:
         df_barras = df_plot.copy()
-        color_kw = {"color": "setor"}
+        color_kw = {"color": "setor", "color_discrete_map": cmap_setor}
     else:
         df_barras = df_plot[df_plot["setor"].isin(st.session_state["barras_setor_focus"])]
-        color_kw = {"color": "resultado_std"}
+        color_kw = {"color": "resultado_std", "color_discrete_map": cmap_resultado}
 
-    grp = df_barras.groupby(["setor", "resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
+    grp = df_barras.copy()
+    grp["resultado_std"] = safe_series_strings(grp["resultado_std"])
+    if not show_empty:
+        grp = grp[grp["resultado_std"] != EMPTY_LABEL]
+    grp = grp.groupby(["setor", "resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
 
     try:
         import plotly.express as px
@@ -546,11 +635,17 @@ else:
         df_pie_res = df_plot
     else:
         df_pie_res = df_plot[df_plot["setor"].isin(sel_setores_pie_res)]
-    pie_res = df_pie_res["resultado_std"].value_counts().reset_index()
+    vals_res = safe_series_strings(df_pie_res["resultado_std"])
+    if not show_empty:
+        vals_res = vals_res[vals_res != EMPTY_LABEL]
+    pie_res = vals_res.value_counts().reset_index()
     pie_res.columns = ["resultado_padronizado", "n"]
     try:
         import plotly.express as px
-        fig5 = px.pie(pie_res, names="resultado_padronizado", values="n", hole=0.4)
+        fig5 = px.pie(
+            pie_res, names="resultado_padronizado", values="n", hole=0.4,
+            color="resultado_padronizado", color_discrete_map=cmap_resultado
+        )
         fig5.update_traces(textposition="inside", textinfo=("percent+label" if show_pcts else "label+value"))
         st.plotly_chart(fig5, use_container_width=True, theme="streamlit")
     except Exception:
@@ -572,7 +667,10 @@ if "(Todos)" in sel_tipos_amostra or len(sel_tipos_amostra) == 0:
     df_ma = df_plot
 else:
     df_ma = df_plot[df_plot["tipo_amostra"].isin(sel_tipos_amostra)]
-pie_micro_amostra = df_ma["tipo_micro"].replace("", np.nan).dropna().value_counts().reset_index()
+vals_ma = safe_series_strings(df_ma["tipo_micro"])
+if not show_empty:
+    vals_ma = vals_ma[vals_ma != EMPTY_LABEL]
+pie_micro_amostra = vals_ma.value_counts().reset_index()
 pie_micro_amostra.columns = ["tipo_micro", "n"]
 if pie_micro_amostra.empty:
     st.caption("Sem dados suficientes para esta combinação.")
@@ -597,7 +695,10 @@ if "(Todos)" in sel_setores_pie or len(sel_setores_pie) == 0:
     df_ms = df_plot
 else:
     df_ms = df_plot[df_plot["setor"].isin(sel_setores_pie)]
-pie_micro_setor = df_ms["tipo_micro"].replace("", np.nan).dropna().value_counts().reset_index()
+vals_ms = safe_series_strings(df_ms["tipo_micro"])
+if not show_empty:
+    vals_ms = vals_ms[vals_ms != EMPTY_LABEL]
+pie_micro_setor = vals_ms.value_counts().reset_index()
 pie_micro_setor.columns = ["tipo_micro", "n"]
 if pie_micro_setor.empty:
     st.caption("Sem dados suficientes para esta combinação.")
@@ -674,10 +775,12 @@ else:
             grp = cmp.groupby(["ano","mes_num","mes_ano","resultado_std"]).size().reset_index(name="n")
             pivot = grp.pivot_table(index=["ano","mes_num","mes_ano"], columns="resultado_std", values="n", aggfunc="sum", fill_value=0)
             color_field = "resultado_std"
+            c_map = cmap_resultado
         else:
             grp = cmp.groupby(["ano","mes_num","mes_ano","setor"]).size().reset_index(name="n")
             pivot = grp.pivot_table(index=["ano","mes_num","mes_ano"], columns="setor", values="n", aggfunc="sum", fill_value=0)
             color_field = "setor"
+            c_map = cmap_setor
 
         pivot = pivot.sort_values(by=["ano","mes_num"])
         plot_df = pivot.reset_index()
@@ -692,6 +795,7 @@ else:
                 fig_cmp = px.bar(
                     long_df,
                     x="mes_ano", y="n", color=color_field,
+                    color_discrete_map=c_map,
                     barmode=("stack" if barmode_stack else "group"),
                     title=f"Comparação mensal — agrupado por {color_field}"
                 )
@@ -704,6 +808,79 @@ else:
 
         st.caption("Tabela (linhas: mês/ano; colunas: categorias selecionadas)")
         st.dataframe(pivot, use_container_width=True)
+
+# =========================
+# NOVA SEÇÃO — Rank de mudança mês a mês por micro-organismo
+# =========================
+st.subheader("Rank de Mudança Mensal por Micro-organismo (Δ último vs anterior)")
+try:
+    # usa df_plot (com filtros/exclusões) para refletir a visão atual
+    tmp = df_plot.copy()
+    tmp = tmp.dropna(subset=["ano","mes_num"])
+    if tmp.empty:
+        st.caption("Sem dados suficientes após filtros.")
+    else:
+        tmp["mes_ano_key"] = tmp["ano"].astype(int).astype(str) + "-" + tmp["mes_num"].astype(int).astype(str).str.zfill(2)
+        # ordena cronologicamente
+        ordered_keys = sorted(tmp["mes_ano_key"].unique().tolist())
+        if len(ordered_keys) < 2:
+            st.caption("É necessário pelo menos 2 meses para calcular o Δ.")
+        else:
+            last_key = ordered_keys[-1]
+            prev_key = ordered_keys[-2]
+            g = tmp.groupby(["mes_ano_key","resultado_std"]).size().reset_index(name="n")
+            cur = g[g["mes_ano_key"] == last_key].set_index("resultado_std")["n"]
+            prv = g[g["mes_ano_key"] == prev_key].set_index("resultado_std")["n"]
+            # garante presença de todas as categorias
+            all_res = sorted(set(cur.index).union(set(prv.index)))
+            cur = cur.reindex(all_res, fill_value=0)
+            prv = prv.reindex(all_res, fill_value=0)
+            delta = cur - prv
+            arrow = delta.apply(lambda x: "▲" if x>0 else ("▼" if x<0 else "➖"))
+            df_rank = pd.DataFrame({
+                "resultado_padronizado": all_res,
+                f"{prev_key}": prv.values,
+                f"{last_key}": cur.values,
+                "Δ": delta.values,
+                "tendência": arrow.values
+            }).sort_values(["Δ", f"{last_key}"], ascending=[False, False])
+            st.dataframe(df_rank.reset_index(drop=True), use_container_width=True)
+except Exception as e:
+    st.caption(f"Não foi possível gerar o rank de mudança: {e}")
+
+# =========================
+# NOVA SEÇÃO — Heatmap mês × setor
+# =========================
+st.subheader("Heatmap Mês × Setor")
+try:
+    hm = df_plot.copy()
+    hm = hm.dropna(subset=["ano","mes_num"])
+    if hm.empty:
+        st.caption("Sem dados suficientes após filtros.")
+    else:
+        hm["mes_rot"] = hm["mes_num"].map(MESES_PT)
+        hm["mes_ano"] = hm["mes_rot"].astype(str) + "/" + hm["ano"].astype(int).astype(str)
+        table = hm.groupby(["mes_ano","setor"]).size().reset_index(name="n")
+        # pivot com meses como linhas em ordem cronológica
+        # ordenação cronológica:
+        order_df = hm[["mes_ano","ano","mes_num"]].drop_duplicates().sort_values(["ano","mes_num"])
+        cat_order = order_df["mes_ano"].tolist()
+        pv = table.pivot_table(index="mes_ano", columns="setor", values="n", aggfunc="sum", fill_value=0)
+        pv = pv.reindex(cat_order)
+        try:
+            import plotly.express as px
+            fig_hm = px.imshow(
+                pv,
+                aspect="auto",
+                color_continuous_scale="Blues",
+                labels=dict(color="Contagem"),
+            )
+            fig_hm.update_layout(margin=dict(l=40,r=20,t=30,b=40))
+            st.plotly_chart(fig_hm, use_container_width=True, theme="streamlit")
+        except Exception:
+            st.dataframe(pv, use_container_width=True)
+except Exception as e:
+    st.caption(f"Não foi possível gerar o heatmap: {e}")
 
 # =========================
 # CARDS – Tabelas com filtros por coluna
@@ -728,16 +905,28 @@ def df_with_column_filters(df: pd.DataFrame, label: str, cols_filter: List[str],
         return df[mask]
 
 st.subheader("Distribuições por Segmento")
-seg1 = base.groupby(["setor","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
+seg1 = base.copy()
+seg1["resultado_std"] = safe_series_strings(seg1["resultado_std"])
+if not show_empty:
+    seg1 = seg1[seg1["resultado_std"] != EMPTY_LABEL]
+seg1 = seg1.groupby(["setor","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
 _ = df_with_column_filters(seg1, "Tabela: Setor × Resultado", ["setor","resultado_std"], key_prefix="seg1")
 
 st.subheader("Distribuições por Origem da Amostra")
-seg2 = base.groupby(["tipo_amostra","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
+seg2 = base.copy()
+seg2["resultado_std"] = safe_series_strings(seg2["resultado_std"])
+if not show_empty:
+    seg2 = seg2[seg2["resultado_std"] != EMPTY_LABEL]
+seg2 = seg2.groupby(["tipo_amostra","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
 _ = df_with_column_filters(seg2, "Tabela: Tipo de amostra × Resultado (com filtros por coluna)", ["tipo_amostra","resultado_std"], key_prefix="seg2")
 
 st.subheader("Distribuições por Classe de Micro-organismo")
 if base["tipo_micro"].replace("", np.nan).notna().any():
-    seg3 = base.groupby(["tipo_micro","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
+    seg3 = base.copy()
+    seg3["resultado_std"] = safe_series_strings(seg3["resultado_std"])
+    if not show_empty:
+        seg3 = seg3[seg3["resultado_std"] != EMPTY_LABEL]
+    seg3 = seg3.groupby(["tipo_micro","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
     _ = df_with_column_filters(seg3, "Tabela: Tipo de micro-organismo × Resultado", ["tipo_micro","resultado_std"], key_prefix="seg3")
 else:
     st.caption("Sem dados de 'tipo_micro' suficientes para esta distribuição.")
