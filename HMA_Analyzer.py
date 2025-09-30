@@ -285,13 +285,25 @@ raw["mes_num"] = raw["mes_num"].fillna(parsed["mes_pars"])
 
 need_fill = raw["data"].isna()
 if need_fill.any():
-    dia_fill = parsed["dia_pars"].fillna(1).astype(int)
-    ano_fill = raw["ano"].fillna(default_year).astype("Int64")
+    # Fallbacks seguros
+    yr_fallback = default_year if default_year is not None else pd.Timestamp.today().year
+
+    ano_fill = raw["ano"].astype("Int64")
     mes_fill = raw["mes_num"].astype("Int64")
-    synth = pd.to_datetime(
-        pd.DataFrame({"year": ano_fill, "month": mes_fill, "day": dia_fill}),
-        errors="coerce"
-    )
+    dia_fill = parsed["dia_pars"].astype("Int64")
+
+    # Preenche NAs antes de converter para int nativo
+    ano_fill = ano_fill.fillna(yr_fallback)
+    mes_fill = mes_fill.fillna(1)
+    dia_fill = dia_fill.fillna(1)
+
+    parts = pd.DataFrame({
+        "year":  ano_fill.astype(int),
+        "month": mes_fill.astype(int),
+        "day":   dia_fill.astype(int),
+    })
+
+    synth = pd.to_datetime(parts, errors="coerce")
     raw.loc[need_fill, "data"] = synth[need_fill]
 
 raw["mes"] = raw["mes_num"].map(MESES_PT)
