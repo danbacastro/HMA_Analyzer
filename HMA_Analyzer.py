@@ -233,8 +233,8 @@ def read_raw(file) -> pd.DataFrame:
         return pd.DataFrame()
     name = getattr(file, "name", "")
     if name.lower().endswith((".xlsx", ".xls")):
-        return pd.read_excel(file, header=None, skiprows=4)
-    return pd.read_csv(file, header=None, skiprows=4)
+        return pd.read_excel(file, header=None, skiprows=2)
+    return pd.read_csv(file, header=None, skiprows=2)
 
 @st.cache_data(show_spinner=False)
 def read_translation(file) -> pd.DataFrame:
@@ -261,6 +261,9 @@ raw_df = read_raw(data_file)
 if raw_df.empty:
     st.info("⬅️ Carregue a planilha *bruta* para começar.")
     st.stop()
+
+# Check: quantas linhas de dados foram analisadas
+st.caption(f"✅ Número de Dados Lidos: **{len(raw_df)}**.")
 
 # Índices fixos: B=1, D=3, E=4, F=5
 try:
