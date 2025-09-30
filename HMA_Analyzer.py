@@ -51,51 +51,45 @@ def round_up_multiple(value: int, multiple: int) -> int:
         return value
     return int(math.ceil(value / multiple) * multiple)
 
-# [NOVO] — inferir ano pelo nome do arquivo
+# Inferir ano pelo nome do arquivo
 def infer_year_from_filename(name: str) -> Optional[int]:
     if not name:
         return None
     m = re.search(r'((?:19|20)\d{2})', name)
     return int(m.group(1)) if m else None
 
-# [NOVO] — parse PT-BR "dia mês" (com/sem espaço) + fallback dd/mm
+# Parse PT-BR "dia mês" (com/sem espaço) + fallback dd/mm
 MESES_MAP = {
     "janeiro":1, "fevereiro":2, "marco":3, "março":3, "abril":4, "maio":5, "junho":6,
     "julho":7, "agosto":8, "setembro":9, "outubro":10, "novembro":11, "dezembro":12
 }
-MESES_PT = {  # rótulos
+MESES_PT = {
     1:"janeiro",2:"fevereiro",3:"março",4:"abril",5:"maio",6:"junho",
     7:"julho",8:"agosto",9:"setembro",10:"outubro",11:"novembro",12:"dezembro"
 }
 
 def parse_pt_dates(col: pd.Series, default_year: Optional[int]) -> pd.DataFrame:
     s = col.astype(str).fillna("").str.lower().map(_strip_accents)
-    # padrão "dd mes" com/sem espaço:  "26marco" ou "26 marco"
     m = s.str.extract(r'(?P<dia>\d{1,2})\s*(?P<mes>janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)')
-    # fallback "dd/mm" (com/sem ano)
     m2 = s.str.extract(r'(?P<dia2>\d{1,2})[/-](?P<mes2>\d{1,2})(?:[/-](?P<ano2>\d{2,4}))?')
 
     dia = pd.to_numeric(m["dia"], errors="coerce")
     mes = m["mes"].map(MESES_MAP)
 
-    # completa com dd/mm caso falhe o texto
     dia = dia.fillna(pd.to_numeric(m2["dia2"], errors="coerce"))
     mes = mes.fillna(pd.to_numeric(m2["mes2"], errors="coerce")).clip(1,12)
 
-    # tenta achar ano explícito
     ano = s.str.extract(r'((?:19|20)\d{2})')[0]
     ano = pd.to_numeric(ano, errors="coerce")
     if default_year is not None:
         ano = ano.fillna(default_year)
 
-    # garante limites
     dia = dia.where(dia.between(1,31), np.nan)
     mes = mes.where(mes.between(1,12), np.nan)
 
     out = pd.DataFrame({"dia_pars": dia, "mes_pars": mes, "ano_pars": ano})
     return out
 
-# [NOVO] — manter multiselects sincronizados com novas opções (novo arquivo)
 def sync_multiselect_state(key: str, options: List, select_all_on_change: bool = True):
     opts_key = f"{key}__opts"
     cur_opts = list(options)
@@ -111,8 +105,8 @@ def sync_multiselect_state(key: str, options: List, select_all_on_change: bool =
 # Streamlit – UI
 # =========================
 
-st.set_page_config(page_title="HMA Analyzer — Analytics & Report", layout="wide")
-st.title("🧫 HMA Analyzer — Analytics & Report")
+st.set_page_config(page_title="HMA SCIH — Analytics & Report", layout="wide")
+st.title("🧫 HMA SCIH — Analytics & Report")
 
 st.markdown(
     """
@@ -139,7 +133,7 @@ with st.sidebar:
     st.markdown("---")
     st.header("🗓️ Filtro por Data")
     st.caption("Baseado na coluna de datas da planilha bruta.")
-    date_filters_placeholder = st.container()  # <-- controles surgem aqui
+    date_filters_placeholder = st.container()
 
     st.markdown("---")
     st.header("📊 Controles de gráficos")
@@ -213,17 +207,15 @@ except Exception as e:
     st.error(f"Erro ao mapear colunas por índice (B,D,E,F): {e}")
     st.stop()
 
-# ===== Derivar Ano/Mês a partir da coluna 'data' OU do texto PT-BR da coluna B =====
-default_year = infer_year_from_filename(getattr(data_file, "name", ""))  # ex.: 2025 em "TOTAL CULTURAS 2025.csv"
+# Ano/Mês a partir de 'data' OU do texto PT-BR da coluna B
+default_year = infer_year_from_filename(getattr(data_file, "name", ""))
 parsed = parse_pt_dates(raw_df.iloc[:, 1], default_year)
 
-# extrai ano/mês preferindo 'data' quando válido e preenchendo NaN com o parser de texto
 raw["ano"] = raw["data"].dt.year
 raw["mes_num"] = raw["data"].dt.month
 raw["ano"] = raw["ano"].fillna(parsed["ano_pars"])
 raw["mes_num"] = raw["mes_num"].fillna(parsed["mes_pars"])
 
-# se 'data' estiver NaT, criamos uma data sintética usando dia_pars (ou 1º do mês)
 need_fill = raw["data"].isna()
 if need_fill.any():
     dia_fill = parsed["dia_pars"].fillna(1).astype(int)
@@ -235,7 +227,6 @@ if need_fill.any():
     )
     raw.loc[need_fill, "data"] = synth[need_fill]
 
-# rótulo textual do mês (para exibir etc.)
 raw["mes"] = raw["mes_num"].map(MESES_PT)
 
 with st.expander("Prévia da planilha bruta (20 linhas)"):
@@ -247,20 +238,19 @@ with st.expander("Prévia já nomeada (20 linhas)"):
 # Tradução + Mapeamentos em tempo real
 # =========================
 
-# CSV de tradução
 trans_tbl = read_translation(trans_file)
 map_pad  = dict(zip(trans_tbl["resultado_norm"], trans_tbl["padronizado"].astype(str))) if not trans_tbl.empty else {}
 map_tipo = dict(zip(trans_tbl["resultado_norm"], trans_tbl["tipo_micro"].astype(str))) if not trans_tbl.empty else {}
 
-# >>> NOVO: mapeamentos temporários desta sessão (runtime)
+# dicionários temporários de sessão
 rt_pad  = st.session_state.get("runtime_map_pad",  {})
 rt_tipo = st.session_state.get("runtime_map_tipo", {})
 
-# >>> NOVO: Combina CSV (base) + runtime (sobrepõe)
+# combinado (CSV + runtime)
 map_pad_combined  = {**map_pad,  **rt_pad}
 map_tipo_combined = {**map_tipo, **rt_tipo}
 
-# Padronização usando o combinado
+# Padronização
 res_norm = raw["resultado_raw"].map(normalize_text)
 raw["resultado_std"] = res_norm.map(map_pad_combined).fillna(raw["resultado_raw"])
 raw["tipo_micro"]     = res_norm.map(map_tipo_combined).fillna("")
@@ -270,13 +260,11 @@ raw["tipo_micro"]     = res_norm.map(map_tipo_combined).fillna("")
 # =========================
 
 with date_filters_placeholder:
-    # opções derivadas do dataset atual
     anos_disp = sorted(raw["ano"].dropna().astype(int).unique().tolist())
     meses_disp = sorted([m for m in raw["mes_num"].dropna().unique().tolist() if 1 <= m <= 12])
     meses_rotulos = [MESES_PT[m] for m in meses_disp]
     rot2num = {v: k for k, v in MESES_PT.items()}
 
-    # sincroniza estado (seleciona tudo ao trocar de arquivo)
     sync_multiselect_state("f_anos", anos_disp, select_all_on_change=True)
     sync_multiselect_state("f_meses", meses_rotulos, select_all_on_change=True)
 
@@ -286,11 +274,7 @@ with date_filters_placeholder:
     if c2.button("Limpar (Ano)"):
         st.session_state["f_anos"] = []
 
-    sel_anos = st.multiselect(
-        "Ano(s)",
-        options=anos_disp,
-        key="f_anos",
-    )
+    sel_anos = st.multiselect("Ano(s)", options=anos_disp, key="f_anos")
 
     c3, c4 = st.columns(2)
     if c3.button("Selecionar todos (Mês)"):
@@ -298,13 +282,8 @@ with date_filters_placeholder:
     if c4.button("Limpar (Mês)"):
         st.session_state["f_meses"] = []
 
-    sel_meses_rot = st.multiselect(
-        "Mês(es)",
-        options=meses_rotulos,
-        key="f_meses",
-    )
+    sel_meses_rot = st.multiselect("Mês(es)", options=meses_rotulos, key="f_meses")
 
-# aplica máscara (listas vazias = sem filtro, mantém tudo)
 sel_meses_num = [rot2num[r] for r in sel_meses_rot] if sel_meses_rot else []
 mask_year  = raw["ano"].isin(sel_anos) if len(sel_anos) > 0 else pd.Series([True]*len(raw), index=raw.index)
 mask_month = raw["mes_num"].isin(sel_meses_num) if len(sel_meses_num) > 0 else pd.Series([True]*len(raw), index=raw.index)
@@ -322,11 +301,9 @@ exclude_list = exclude_placeholder.multiselect(
     key="select_exclude"
 )
 
-# Bases
-base    = raw[mask_date].copy()  # só data
+base    = raw[mask_date].copy()
 df_plot = base[~base["resultado_std"].isin(exclude_list)] if exclude_list else base
 
-# --- Badge de período ativo ---
 def _format_period(sel_anos_list, sel_meses_nums):
     anos_all = sorted(raw["ano"].dropna().astype(int).unique().tolist())
     meses_all = sorted([m for m in raw["mes_num"].dropna().unique().tolist() if 1 <= m <= 12])
@@ -384,7 +361,7 @@ else:
     st.warning("Existem resultados sem padronização. Atualize o Arquivo de Padronização de Nomes.")
     editable = unmatched_suggested.copy()
     editable["padronizado"] = ""
-    editable["tipo_micro"] = ""  # permitir opcionalmente preencher tipo_micro
+    editable["tipo_micro"] = ""
     st.caption("Sugestões automáticas (se houver) aparecem em *sugestoes*.")
     edited = st.data_editor(
         editable[["resultado", "resultado_norm", "sugestoes", "padronizado", "tipo_micro"]],
@@ -393,7 +370,7 @@ else:
         key="editor_unmatched",
     )
 
-    # construir novos mapeamentos a partir do que foi digitado
+    # novos mapeamentos digitados
     new_map = edited.dropna(subset=["padronizado"]).copy()
     if "tipo_micro" not in new_map.columns:
         new_map["tipo_micro"] = ""
@@ -401,7 +378,21 @@ else:
     new_map["resultado_norm"] = new_map["resultado"].map(normalize_text)
     new_map = new_map.drop_duplicates(subset=["resultado_norm"], keep="last")
 
-    col_a, col_b = st.columns(2)
+    # >>> APLICAÇÃO IMEDIATA (sem botão): atualiza runtime a cada edição
+    if "runtime_map_pad" not in st.session_state:
+        st.session_state["runtime_map_pad"] = {}
+    if "runtime_map_tipo" not in st.session_state:
+        st.session_state["runtime_map_tipo"] = {}
+    # zera só as chaves que estão sendo editadas (para não apagar runtime antigos de outras entradas)
+    for _, r in new_map.iterrows():
+        k = normalize_text(str(r["resultado"]))
+        st.session_state["runtime_map_pad"][k] = str(r["padronizado"])
+        tm = str(r.get("tipo_micro", "")).strip()
+        if tm:
+            st.session_state["runtime_map_tipo"][k] = tm
+
+    # botões de download (novos e template)
+    col_a, col_b, col_c = st.columns(3)
     with col_a:
         if not new_map.empty:
             buffer = io.StringIO()
@@ -425,82 +416,37 @@ else:
             mime="text/csv",
         )
 
-    # ==== APPEND NO CSV DE TRADUÇÃO + DEDUP ====
-    st.markdown("---")
-    st.subheader("Atualizar CSV de Tradução (append)")
-    if trans_tbl is None or trans_tbl.empty:
-        base_trad = pd.DataFrame(columns=["resultado","padronizado","tipo_micro"])
-    else:
-        base_trad = trans_tbl[["resultado","padronizado","tipo_micro"]].copy()
-        base_trad = base_trad.fillna("")
+    # >>> 3º BOTÃO: tradução ATUALIZADA (append + dedup) — sem card extra
+    with col_c:
+        if trans_tbl is None or trans_tbl.empty:
+            base_trad = pd.DataFrame(columns=["resultado","padronizado","tipo_micro"])
+        else:
+            base_trad = trans_tbl[["resultado","padronizado","tipo_micro"]].copy().fillna("")
+        novos_trad = pd.DataFrame(columns=["resultado","padronizado","tipo_micro"])
+        if not new_map.empty:
+            novos_trad = new_map[["resultado","padronizado","tipo_micro"]].copy().fillna("")
+        merged_trad = pd.concat([base_trad, novos_trad], ignore_index=True)
+        if not merged_trad.empty:
+            merged_trad["resultado_norm"] = merged_trad["resultado"].map(normalize_text)
+            merged_trad = merged_trad.drop_duplicates(subset=["resultado_norm"], keep="last").reset_index(drop=True)
+        else:
+            merged_trad["resultado_norm"] = []
+        buf_merged = io.StringIO()
+        merged_trad[["resultado","padronizado","tipo_micro"]].to_csv(buf_merged, index=False)
+        st.download_button(
+            "⬇️ Baixar Planilha de Padronização de Nomes ATUALIZADO",
+            data=buf_merged.getvalue(),
+            file_name=f"traducao_atualizada_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            key="btn_download_traducao_atualizada"
+        )
 
-    novos_trad = pd.DataFrame(columns=["resultado","padronizado","tipo_micro"])
-    if not new_map.empty:
-        novos_trad = new_map[["resultado","padronizado","tipo_micro"]].copy()
-        novos_trad = novos_trad.fillna("")
-
-    merged_trad = pd.concat([base_trad, novos_trad], ignore_index=True)
-
-    if not merged_trad.empty:
-        merged_trad["resultado_norm"] = merged_trad["resultado"].map(normalize_text)
-        merged_trad = merged_trad.drop_duplicates(subset=["resultado_norm"], keep="last").reset_index(drop=True)
-    else:
-        merged_trad["resultado_norm"] = []
-
-    buf_merged = io.StringIO()
-    merged_trad[["resultado","padronizado","tipo_micro"]].to_csv(buf_merged, index=False)
-    st.download_button(
-        "⬇️ Baixar CSV de Tradução ATUALIZADO (append + dedup)",
-        data=buf_merged.getvalue(),
-        file_name=f"traducao_atualizada_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-        key="btn_download_traducao_atualizada"
-    )
-
-    col_m1, col_m2 = st.columns([1,1])
-    with col_m1:
-        if st.button("Aplicar TRADUÇÃO ATUALIZADA nesta sessão", key="btn_apply_merged_translation"):
-            if "runtime_map_pad" not in st.session_state:
-                st.session_state["runtime_map_pad"] = {}
-            if "runtime_map_tipo" not in st.session_state:
-                st.session_state["runtime_map_tipo"] = {}
-
-            merged_pad  = dict(zip(merged_trad["resultado_norm"], merged_trad["padronizado"].astype(str)))
-            merged_tipo = dict(zip(merged_trad["resultado_norm"], merged_trad["tipo_micro"].astype(str)))
-
-            st.session_state["runtime_map_pad"]  = merged_pad
-            st.session_state["runtime_map_tipo"] = merged_tipo
-
-            st.success("Tradução ATUALIZADA aplicada nesta sessão.")
-            st.experimental_rerun()
-
-    with col_m2:
-        st.caption("Dica: após baixar o CSV ATUALIZADO, substitua o arquivo de tradução 'oficial' no seu repositório.")
-
-    # >>> NOVO: aplicar imediatamente na sessão (sem recarregar CSV)
-    st.markdown("---")
-    apply_now = st.checkbox("Aplicar imediatamente aos gráficos/tabelas desta sessão", value=True, key="apply_now")
-    col_apply1, col_apply2 = st.columns([1,1])
-    with col_apply1:
-        if apply_now and not new_map.empty and st.button("Aplicar mapeamentos digitados agora", key="btn_apply_now"):
-            if "runtime_map_pad" not in st.session_state:
-                st.session_state["runtime_map_pad"] = {}
-            if "runtime_map_tipo" not in st.session_state:
-                st.session_state["runtime_map_tipo"] = {}
-            for _, r in new_map.iterrows():
-                k = normalize_text(str(r["resultado"]))
-                st.session_state["runtime_map_pad"][k] = str(r["padronizado"])
-                tm = str(r.get("tipo_micro", "")).strip()
-                if tm:
-                    st.session_state["runtime_map_tipo"][k] = tm
-            st.success("Mapeamentos aplicados nesta sessão.")
-            st.experimental_rerun()
-    with col_apply2:
-        if st.button("Limpar mapeamentos temporários desta sessão", key="btn_clear_runtime"):
-            st.session_state.pop("runtime_map_pad", None)
-            st.session_state.pop("runtime_map_tipo", None)
-            st.info("Mapeamentos temporários limpos.")
-            st.experimental_rerun()
+    # opção de limpar mapeamentos temporários
+    if st.button("Limpar mapeamentos temporários desta sessão", key="btn_clear_runtime"):
+        st.session_state.pop("runtime_map_pad", None)
+        st.session_state.pop("runtime_map_tipo", None)
+        st.info("Mapeamentos temporários limpos.")
+        st.rerun()
 
 # =========================
 # GRÁFICOS – ORDEM
@@ -543,43 +489,30 @@ with col2:
     except Exception:
         st.info("Instale plotly para ver os gráficos (pip install plotly)")
 
-# 2) POR SETOR – BARRAS (comparativo / focado)
+# 2) POR SETOR – BARRAS
 st.subheader("Gráfico de Barras por Setor")
 if df_plot.empty:
     st.info("Nenhum dado disponível para os setores/período/exclusões selecionados.")
 else:
-    # multiselect com opção (Todos) — visualmente começa com (Todos)
     setores_opts_barras = sorted(df_plot["setor"].dropna().unique().tolist())
     setores_ui = ["(Todos)"] + setores_opts_barras
-
-    # inicializa estado
     if "barras_setor_focus" not in st.session_state:
         st.session_state["barras_setor_focus"] = ["(Todos)"]
-
-    # se opções mudarem (novo arquivo), volta para (Todos)
     prev_opts = st.session_state.get("barras_setor_focus__opts")
     if prev_opts != setores_opts_barras:
         st.session_state["barras_setor_focus__opts"] = setores_opts_barras
         st.session_state["barras_setor_focus"] = ["(Todos)"]
-
-    sel_focus = st.multiselect(
-        "Selecionar setor(es)",
-        options=setores_ui,
-        key="barras_setor_focus"
-    )
-
-    # Se (Todos) + outros foram escolhidos, remove (Todos)
+    sel_focus = st.multiselect("Selecionar setor(es)", options=setores_ui, key="barras_setor_focus")
     if "(Todos)" in sel_focus and len(sel_focus) > 1:
         sel_focus = [x for x in sel_focus if x != "(Todos)"]
         st.session_state["barras_setor_focus"] = sel_focus
 
-    # Aplica seleção
     if "(Todos)" in st.session_state["barras_setor_focus"] or len(st.session_state["barras_setor_focus"]) == 0:
         df_barras = df_plot.copy()
-        color_kw = {"color": "setor"}  # comparativo entre setores
+        color_kw = {"color": "setor"}
     else:
         df_barras = df_plot[df_plot["setor"].isin(st.session_state["barras_setor_focus"])]
-        color_kw = {"color": "resultado_std"}  # cores por micro-organismo no foco
+        color_kw = {"color": "resultado_std"}
 
     grp = df_barras.groupby(["setor", "resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
 
@@ -597,7 +530,7 @@ else:
     except Exception:
         st.dataframe(grp)
 
-# 3) PIZZA – Distribuição de Resultados (com **multi**-seleção de setor)
+# 3) PIZZA – Distribuição de Resultados (multi seleção de setor)
 st.subheader("Gráfico de Distribuição de Micro-organismos por Setores Resultados")
 if df_plot.empty:
     st.info("Sem dados para distribuição de resultados.")
@@ -624,10 +557,9 @@ else:
         st.dataframe(pie_res)
 
 # =========================
-# NOVOS GRÁFICOS (com **multi**-seleção)
+# NOVOS GRÁFICOS (multi)
 # =========================
 
-# A) Pizza: distribuição de Micro-organismos por tipo de amostra (multi)
 st.subheader("Gráfico de Distribuição de Micro-organismos por Origem de Amostra")
 tipos_amostra = sorted(df_plot["tipo_amostra"].dropna().unique().tolist())
 sel_tipos_amostra = st.multiselect(
@@ -653,7 +585,6 @@ else:
     except Exception:
         st.dataframe(pie_micro_amostra)
 
-# B) Pizza: distribuição de Tipo de Micro-organismos por setor (multi)
 st.subheader("Gráfico de Distribuição de Classe de Micro-organismos por Setor")
 setores_opts2 = sorted(df_plot["setor"].dropna().unique().tolist())
 sel_setores_pie = st.multiselect(
@@ -680,7 +611,7 @@ else:
         st.dataframe(pie_micro_setor)
 
 # =========================
-# COMPARAÇÃO MENSAL/ANUAL (novo card)
+# COMPARAÇÃO MENSAL/ANUAL
 # =========================
 st.header("🗓️ Comparação Mensal/Anual")
 
@@ -699,7 +630,6 @@ else:
 
     colA, colB, colC = st.columns([1,1,1])
 
-    # Setor(es)
     setores_opts_cmp = sorted(cmp["setor"].dropna().unique().tolist())
     setores_ui_cmp = ["(Todos)"] + setores_opts_cmp
     if "cmp_setores" not in st.session_state:
@@ -709,16 +639,11 @@ else:
         st.session_state["cmp_setores__opts"] = setores_opts_cmp
         st.session_state["cmp_setores"] = ["(Todos)"]
     with colA:
-        sel_setores_cmp = st.multiselect(
-            "Setor(es)",
-            options=setores_ui_cmp,
-            key="cmp_setores"
-        )
+        sel_setores_cmp = st.multiselect("Setor(es)", options=setores_ui_cmp, key="cmp_setores")
         if "(Todos)" in sel_setores_cmp and len(sel_setores_cmp) > 1:
             sel_setores_cmp = [x for x in sel_setores_cmp if x != "(Todos)"]
             st.session_state["cmp_setores"] = sel_setores_cmp
 
-    # Micro-organismo(s)
     org_opts_cmp = sorted(cmp["resultado_std"].dropna().unique().tolist())
     org_ui_cmp = ["(Todos)"] + org_opts_cmp
     if "cmp_orgs" not in st.session_state:
@@ -728,24 +653,15 @@ else:
         st.session_state["cmp_orgs__opts"] = org_opts_cmp
         st.session_state["cmp_orgs"] = ["(Todos)"]
     with colB:
-        sel_org_cmp = st.multiselect(
-            "Micro-organismo(s)",
-            options=org_ui_cmp,
-            key="cmp_orgs"
-        )
+        sel_org_cmp = st.multiselect("Micro-organismo(s)", options=org_ui_cmp, key="cmp_orgs")
         if "(Todos)" in sel_org_cmp and len(sel_org_cmp) > 1:
             sel_org_cmp = [x for x in sel_org_cmp if x != "(Todos)"]
             st.session_state["cmp_orgs"] = sel_org_cmp
 
     with colC:
-        agrupar_por = st.radio(
-            "Agrupar por",
-            ["micro-organismo", "setor"],
-            index=0, horizontal=True, key="cmp_groupby"
-        )
+        agrupar_por = st.radio("Agrupar por", ["micro-organismo", "setor"], index=0, horizontal=True, key="cmp_groupby")
         barmode_stack = st.toggle("Empilhar (stack)", value=False, key="cmp_stack")
 
-    # Aplicar filtros
     if "(Todos)" not in st.session_state["cmp_setores"] and len(st.session_state["cmp_setores"]) > 0:
         cmp = cmp[cmp["setor"].isin(st.session_state["cmp_setores"])]
     if "(Todos)" not in st.session_state["cmp_orgs"] and len(st.session_state["cmp_orgs"]) > 0:
