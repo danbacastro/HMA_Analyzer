@@ -18,6 +18,55 @@ import re
 import unicodedata
 import math
 
+# ==== AUTH (colar após os imports, antes de qualquer st.set_page_config) ====
+import streamlit as st
+import os
+
+AUTH_USERNAME = "hma-scih"  # fixo
+
+def _get_secret_password() -> str:
+    # tenta ler de secrets TOML: [app] password_hma="xxx"
+    try:
+        return st.secrets["app"]["password_hma"]
+    except Exception:
+        # fallback opcional (útil localmente): variável de ambiente
+        return os.environ.get("PASSWORD_HMA", "")
+
+def require_login():
+    if "auth_ok" not in st.session_state:
+        st.session_state.auth_ok = False
+
+    # se já autenticado, só oferece logout na sidebar
+    if st.session_state.auth_ok:
+        with st.sidebar:
+            st.markdown("---")
+            if st.button("Sair (logout)", use_container_width=True):
+                st.session_state.auth_ok = False
+                st.experimental_rerun()
+        return  # segue para o app
+
+    # caso não autenticado: mostra tela de login e bloqueia o resto
+    st.title("🔐 HMA Analyzer — Login")
+    with st.form("login_form", clear_on_submit=False):
+        user = st.text_input("Usuário", value="", placeholder="hma-scih")
+        pw   = st.text_input("Senha", value="", type="password")
+        ok   = st.form_submit_button("Entrar")
+
+    if ok:
+        secret_pw = _get_secret_password()
+        if user.strip() == AUTH_USERNAME and pw == str(secret_pw):
+            st.session_state.auth_ok = True
+            st.success("Login efetuado!")
+            st.experimental_rerun()
+        else:
+            st.error("Usuário ou senha inválidos.")
+
+    st.stop()  # impede o resto do app enquanto não logar
+
+# **Chame isso antes do resto do app**
+require_login()
+# ==== FIM AUTH ====
+
 # =========================
 # Helpers
 # =========================
