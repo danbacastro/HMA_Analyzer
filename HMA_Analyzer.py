@@ -18,52 +18,60 @@ import re
 import unicodedata
 import math
 
-# ==== AUTH (colar após os imports, antes de qualquer st.set_page_config) ====
-import streamlit as st
+# ==== AUTH (logo após os imports, antes de st.set_page_config) ====
 import os
+import streamlit as st
 
 AUTH_USERNAME = "hma-scih"  # fixo
 
 def _get_secret_password() -> str:
-    # tenta ler de secrets TOML: [app] password_hma="xxx"
     try:
         return st.secrets["app"]["password_hma"]
     except Exception:
-        # fallback opcional (útil localmente): variável de ambiente
         return os.environ.get("PASSWORD_HMA", "")
+
+def _safe_rerun():
+    # Streamlit >= 1.27 usa st.rerun; fallback para versões antigas
+    try:
+        st.rerun()
+    except Exception:
+        try:
+            st.experimental_rerun()
+        except Exception:
+            pass  # último recurso: não reroda (evita crash)
 
 def require_login():
     if "auth_ok" not in st.session_state:
         st.session_state.auth_ok = False
 
-    # se já autenticado, só oferece logout na sidebar
+    # Se já autenticado, mostra botão de logout na sidebar e segue
     if st.session_state.auth_ok:
         with st.sidebar:
             st.markdown("---")
-            if st.button("Sair (logout)", use_container_width=True):
+            if st.button("Sair (logout)", use_container_width=True, key="btn_logout"):
                 st.session_state.auth_ok = False
-                st.experimental_rerun()
-        return  # segue para o app
+                _safe_rerun()
+        return
 
-    # caso não autenticado: mostra tela de login e bloqueia o resto
+    # Tela de login (bloqueia o app até autenticar)
     st.title("🔐 HMA Analyzer — Login")
     with st.form("login_form", clear_on_submit=False):
-        user = st.text_input("Usuário", value="", placeholder="hma-scih")
-        pw   = st.text_input("Senha", value="", type="password")
-        ok   = st.form_submit_button("Entrar")
+        user = st.text_input("Usuário", value="", placeholder="login", key="auth_user")
+        pw   = st.text_input("Senha", value="", placeholder="senha", type="password", key="auth_pass")
+        ok   = st.form_submit_button("Entrar", use_container_width=True)
 
     if ok:
         secret_pw = _get_secret_password()
         if user.strip() == AUTH_USERNAME and pw == str(secret_pw):
             st.session_state.auth_ok = True
             st.success("Login efetuado!")
-            st.experimental_rerun()
+            _safe_rerun()
         else:
             st.error("Usuário ou senha inválidos.")
-
+            # mantém a página de login visível
     st.stop()  # impede o resto do app enquanto não logar
 
-# **Chame isso antes do resto do app**
+# Chame ANTES de qualquer outra coisa do app:
 require_login()
 # ==== FIM AUTH ====
 
