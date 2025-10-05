@@ -4,4 +4,4 @@ streamlit
 rapidfuzz
 plotly
 openpyxl
-
+python-docx
