@@ -724,203 +724,6 @@ else:
         st.dataframe(pie_res)
 
 # =========================
-# 🧠 INSIGHTS AUTOMÁTICOS — "Modo Insights" (com detalhamento por setor por micro-organismo)
-# =========================
-st.header("🧠 Insights Automáticos")
-
-def _fmt_pct(x):
-    try:
-        return f"{x:.0f}%"
-    except Exception:
-        return "–"
-
-def _fmt_arrow(delta):
-    return "▲" if delta > 0 else ("▼" if delta < 0 else "➖")
-
-def _month_key(ano, mes):
-    try:
-        return f"{int(ano):04d}-{int(mes):02d}"
-    except Exception:
-        return None
-
-def _month_label(ano, mes):
-    try:
-        return f"{MESES_PT[int(mes)]}/{int(ano)}"
-    except Exception:
-        return "mês/ano"
-
-# Controles locais deste card (independentes da sidebar)
-c1, c2, c3, c4 = st.columns([1,1,1,1])
-with c1:
-    abs_thr = st.number_input("Δ mínimo (absoluto) para destacar", min_value=1, value=3, step=1, key="ins_abs_thr")
-with c2:
-    pct_thr = st.number_input("Δ mínimo (%) para destacar", min_value=1, value=25, step=1, key="ins_pct_thr")
-with c3:
-    top_k = st.number_input("Qtd. micro-organismos ↑ e ↓", min_value=1, value=3, step=1, key="ins_top_k")
-with c4:
-    top_k_set = st.number_input("Qtd. setores por micro-organismo", min_value=1, value=3, step=1, key="ins_top_k_set")
-
-# Base de insights respeita filtros/exclusões do app
-df_ins = df_plot.copy()
-df_ins["resultado_std_safe"] = safe_series_strings(df_ins["resultado_std"])
-if not show_empty:
-    df_ins = df_ins[df_ins["resultado_std_safe"] != EMPTY_LABEL]
-
-# Garantir ano/mês
-if "ano" not in df_ins.columns:
-    df_ins["ano"] = df_ins["data"].dt.year
-if "mes_num" not in df_ins.columns:
-    df_ins["mes_num"] = df_ins["data"].dt.month
-df_ins = df_ins.dropna(subset=["ano","mes_num"])
-
-if df_ins.empty:
-    st.info("Sem dados para gerar insights com os filtros atuais.")
-else:
-    # chaves e rótulos mensais
-    df_ins["mkey"] = df_ins.apply(lambda r: _month_key(r["ano"], r["mes_num"]), axis=1)
-    df_ins["mlabel"] = df_ins.apply(lambda r: _month_label(r["ano"], r["mes_num"]), axis=1)
-    order_m = (
-        df_ins[["mkey","ano","mes_num","mlabel"]]
-        .drop_duplicates()
-        .dropna(subset=["mkey"])
-        .sort_values(["ano","mes_num"])
-    )
-    months = order_m["mkey"].tolist()
-    if len(months) < 1:
-        st.info("Não há meses válidos após os filtros para gerar insights.")
-    else:
-        last_m = months[-1]
-        prev_m = months[-2] if len(months) >= 2 else None
-        cur_label = order_m.loc[order_m["mkey"] == last_m, "mlabel"].iloc[0] if last_m else "mês atual"
-        prev_label = order_m.loc[order_m["mkey"] == prev_m, "mlabel"].iloc[0] if prev_m else "mês anterior"
-
-        # Panorama geral
-        g_all = df_ins.groupby("mkey").size()
-        cur_total = int(g_all.get(last_m, 0))
-        prev_total = int(g_all.get(prev_m, 0)) if prev_m else 0
-        delta_total = cur_total - prev_total
-        pct_total = (delta_total / prev_total * 100.0) if prev_m and prev_total > 0 else (100.0 if prev_m and prev_total == 0 and cur_total > 0 else 0.0)
-        st.markdown(
-            f"**Panorama ({cur_label} vs {prev_label})**: total de culturas **{cur_total}** "
-            f"({_fmt_arrow(delta_total)} {delta_total:+d}; {_fmt_pct(pct_total)})."
-        )
-
-        # Mudanças por micro-organismo (último vs anterior)
-        g_org = df_ins.groupby(["mkey","resultado_std_safe"]).size().reset_index(name="n")
-        cur_org = g_org[g_org["mkey"] == last_m].set_index("resultado_std_safe")["n"] if last_m else pd.Series(dtype=int)
-        prv_org = g_org[g_org["mkey"] == prev_m].set_index("resultado_std_safe")["n"] if prev_m else pd.Series(dtype=int)
-        org_all = sorted(set(cur_org.index).union(set(prv_org.index)))
-        cur_org = cur_org.reindex(org_all, fill_value=0)
-        prv_org = prv_org.reindex(org_all, fill_value=0)
-        df_delta_org = pd.DataFrame({
-            "resultado": org_all,
-            "n_prev": prv_org.values,
-            "n_cur":  cur_org.values,
-        })
-        df_delta_org["delta"] = df_delta_org["n_cur"] - df_delta_org["n_prev"]
-        df_delta_org["pct"] = df_delta_org.apply(
-            lambda r: (r["delta"] / r["n_prev"] * 100.0) if r["n_prev"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
-            axis=1
-        )
-
-        # Seleção de destaques ↑ e ↓
-        highlights_up = (
-            df_delta_org[(df_delta_org["delta"] >= abs_thr) & (df_delta_org["pct"] >= pct_thr)]
-            .sort_values(["delta","n_cur"], ascending=[False,False])
-            .head(top_k)
-        )
-        highlights_down = (
-            df_delta_org[(df_delta_org["delta"] <= -abs_thr) & (df_delta_org["pct"] <= -pct_thr)]
-            .sort_values(["delta","n_prev"], ascending=[True,False])
-            .head(top_k)
-        )
-
-        # Blocos de texto estruturados: primeiro micro-organismos (aumentos), depois micro-organismos (reduções)
-        def _detail_sectors_for_org(org_name: str, sign: str) -> List[str]:
-            """
-            sign: 'up' ou 'down'
-            retorna linhas de texto detalhando os setores que mais contribuíram
-            """
-            # dados do último e do anterior para ESTE organismo, por setor
-            sub = df_ins[df_ins["resultado_std_safe"] == org_name]
-            g = sub.groupby(["mkey","setor"]).size().reset_index(name="n")
-            cur_s = g[g["mkey"] == last_m].set_index("setor")["n"] if last_m else pd.Series(dtype=int)
-            prv_s = g[g["mkey"] == prev_m].set_index("setor")["n"] if prev_m else pd.Series(dtype=int)
-            all_set = sorted(set(cur_s.index).union(set(prv_s.index)))
-            cur_s = cur_s.reindex(all_set, fill_value=0)
-            prv_s = prv_s.reindex(all_set, fill_value=0)
-            df_set = pd.DataFrame({
-                "setor": all_set,
-                "n_prev": prv_s.values,
-                "n_cur":  cur_s.values,
-            })
-            df_set["delta"] = df_set["n_cur"] - df_set["n_prev"]
-            df_set["pct"] = df_set.apply(
-                lambda r: (r["delta"] / r["n_prev"] * 100.0) if r["n_prev"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
-                axis=1
-            )
-            if sign == "up":
-                det = df_set.sort_values(["delta","n_cur"], ascending=[False,False]).head(int(top_k_set))
-                det = det[det["delta"] > 0]
-            else:
-                det = df_set.sort_values(["delta","n_prev"], ascending=[True,False]).head(int(top_k_set))
-                det = det[det["delta"] < 0]
-
-            lines = []
-            for _, r in det.iterrows():
-                lines.append(
-                    f"    • {r['setor']}: {int(r['n_cur'])} vs {int(r['n_prev'])} "
-                    f"({_fmt_arrow(int(r['delta']))} {int(r['delta']):+d}; {_fmt_pct(r['pct'])})"
-                )
-            return lines
-
-        blocks = []
-
-        if not highlights_up.empty:
-            blocks.append("**Maiores aumentos por micro-organismo (com setores):**")
-            for _, r in highlights_up.iterrows():
-                blocks.append(
-                    f"- **{r['resultado']}**: {int(r['n_cur'])} vs {int(r['n_prev'])} "
-                    f"({_fmt_arrow(int(r['delta']))} {int(r['delta']):+d}; {_fmt_pct(r['pct'])})"
-                )
-                # setores que mais contribuíram para ESTE organismo
-                det_lines = _detail_sectors_for_org(r["resultado"], "up")
-                if det_lines:
-                    blocks.extend(det_lines)
-
-        if not highlights_down.empty:
-            blocks.append("**Maiores reduções por micro-organismo (com setores):**")
-            for _, r in highlights_down.iterrows():
-                blocks.append(
-                    f"- **{r['resultado']}**: {int(r['n_cur'])} vs {int(r['n_prev'])} "
-                    f"({_fmt_arrow(int(r['delta']))} {int(r['delta']):+d}; {_fmt_pct(r['pct'])})"
-                )
-                det_lines = _detail_sectors_for_org(r["resultado"], "down")
-                if det_lines:
-                    blocks.extend(det_lines)
-
-        excl_note = ""
-        if len(base) != len(df_plot):
-            excl_note = " *(observação: resultados excluídos nas configurações não foram considerados nos insights)*"
-        if not show_empty:
-            excl_note += " *(rótulos vazios não foram considerados)*"
-
-        if blocks:
-            st.markdown("\n".join(blocks) + excl_note)
-        else:
-            st.caption("Nenhum micro-organismo atingiu os limiares definidos para destaque.")
-
-        # Download do resumo (Markdown)
-        resumo_md = "# Insights Automáticos\n\n" + "\n".join(blocks if blocks else ["Sem destaques pelos limiares atuais."]) + "\n"
-        st.download_button(
-            "⬇️ Baixar resumo (Markdown)",
-            data=resumo_md,
-            file_name=f"insights_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-            mime="text/markdown",
-            key="btn_download_insights_md"
-        )
-
-# =========================
 # NOVOS GRÁFICOS (multi)
 # =========================
 
@@ -1079,7 +882,7 @@ else:
         st.dataframe(pivot, use_container_width=True)
 
 # =========================
-# NOVA SEÇÃO — Rank de mudança mês a mês por micro-organismo
+# Rank de mudança mês a mês por micro-organismo
 # =========================
 st.subheader("Rank de Mudança Mensal por Micro-organismo (Δ último vs anterior)")
 try:
@@ -1116,6 +919,159 @@ try:
             st.dataframe(df_rank.reset_index(drop=True), use_container_width=True)
 except Exception as e:
     st.caption(f"Não foi possível gerar o rank de mudança: {e}")
+
+# =========================
+# NOVO CARD — Detalhamento por Micro-organismo (Δ último vs anterior)
+# =========================
+st.subheader("🔎 Detalhamento por Micro-organismo (Δ último vs anterior)")
+
+try:
+    tmpd = df_plot.copy()
+    # garantir colunas de tempo
+    if "ano" not in tmpd.columns:
+        tmpd["ano"] = tmpd["data"].dt.year
+    if "mes_num" not in tmpd.columns:
+        tmpd["mes_num"] = tmpd["data"].dt.month
+    tmpd = tmpd.dropna(subset=["ano","mes_num"])
+
+    if tmpd.empty:
+        st.caption("Sem dados suficientes após filtros.")
+    else:
+        # chaves/labels de mês
+        tmpd["mkey"] = (tmpd["ano"].astype(int).astype(str) + "-" + tmpd["mes_num"].astype(int).astype(str).str.zfill(2))
+        tmpd["mlabel"] = tmpd["mes_num"].map(MESES_PT).astype(str) + "/" + tmpd["ano"].astype(int).astype(str)
+
+        # última e penúltima competência
+        order_k = (
+            tmpd[["mkey","ano","mes_num","mlabel"]]
+            .drop_duplicates()
+            .sort_values(["ano","mes_num"])
+        )
+        months_k = order_k["mkey"].tolist()
+        if len(months_k) < 2:
+            st.caption("É necessário pelo menos 2 meses para este detalhamento.")
+        else:
+            last_k = months_k[-1]
+            prev_k = months_k[-2]
+            cur_label = order_k.iloc[-1]["mlabel"]
+            prev_label = order_k.iloc[-2]["mlabel"]
+
+            # opções de organismos (respeita rótulo vazio/flag)
+            org_series_all = safe_series_strings(tmpd["resultado_std"])
+            if not show_empty:
+                org_series_all = org_series_all[org_series_all != EMPTY_LABEL]
+            org_opts = sorted(org_series_all.dropna().unique().tolist())
+
+            # opções de setores
+            set_opts = sorted(tmpd["setor"].dropna().unique().tolist())
+            set_ui = ["(Todos)"] + set_opts
+
+            # multiselects (com estado estável ao mudar opções)
+            if "det_orgs" not in st.session_state:
+                st.session_state["det_orgs"] = []
+            if "det_orgs__opts" not in st.session_state or st.session_state["det_orgs__opts"] != org_opts:
+                st.session_state["det_orgs__opts"] = org_opts
+                # mantém seleção que ainda existe
+                st.session_state["det_orgs"] = [o for o in st.session_state.get("det_orgs", []) if o in org_opts]
+
+            col_do1, col_do2 = st.columns([1,1])
+            with col_do1:
+                sel_orgs = st.multiselect(
+                    "Micro-organismo(s) para detalhar",
+                    options=org_opts,
+                    default=st.session_state.get("det_orgs", []),
+                    key="det_orgs"
+                )
+            if "det_setores" not in st.session_state:
+                st.session_state["det_setores"] = ["(Todos)"]
+            if "det_setores__opts" not in st.session_state or st.session_state["det_setores__opts"] != set_opts:
+                st.session_state["det_setores__opts"] = set_opts
+                st.session_state["det_setores"] = ["(Todos)"]
+            with col_do2:
+                sel_sets = st.multiselect(
+                    "Setor(es) para detalhar",
+                    options=set_ui,
+                    default=st.session_state.get("det_setores", ["(Todos)"]),
+                    key="det_setores"
+                )
+                # se escolher "(Todos)" junto com outros, mantém só os outros
+                if "(Todos)" in sel_sets and len(sel_sets) > 1:
+                    sel_sets = [x for x in sel_sets if x != "(Todos)"]
+                    st.session_state["det_setores"] = sel_sets
+
+            # helpers de formatação
+            def _fmt_pct(v):
+                try:
+                    return f"{v:.0f}%"
+                except Exception:
+                    return "–"
+            def _arrow(d):
+                return "▲" if d > 0 else ("▼" if d < 0 else "➖")
+
+            if not sel_orgs:
+                st.caption("Selecione ao menos um micro-organismo para ver o detalhamento.")
+            else:
+                # pré-computes por mês/organismo e por mês/organismo/setor
+                g_org = tmpd.groupby(["mkey","resultado_std"]).size().reset_index(name="n")
+                g_set = tmpd.groupby(["mkey","resultado_std","setor"]).size().reset_index(name="n")
+
+                # bloco markdown acumulado
+                md_lines = [f"**Período comparado:** {cur_label} vs {prev_label}", ""]
+                for org in sel_orgs:
+                    # mapeia safe label -> valor original (busca direta em coluna)
+                    # usamos safe_series_strings também aqui para comparar sem erro
+                    org_mask_cur = safe_series_strings(tmpd["resultado_std"]) == org
+                    # totais do organismo (meses)
+                    cur_n = int(g_org[(g_org["mkey"] == last_k) & (g_org["resultado_std"] == org)]["n"].sum())
+                    prev_n = int(g_org[(g_org["mkey"] == prev_k) & (g_org["resultado_std"] == org)]["n"].sum())
+                    delta = cur_n - prev_n
+                    pct = (delta / prev_n * 100.0) if prev_n > 0 else (100.0 if cur_n > 0 else 0.0)
+
+                    md_lines.append(f"- **{org}**: {cur_n} vs {prev_n} ({_arrow(delta)} {delta:+d}; {_fmt_pct(pct)})")
+
+                    # detalhamento por setor
+                    cur_s = g_set[(g_set["mkey"] == last_k) & (g_set["resultado_std"] == org)][["setor","n"]].set_index("setor")["n"]
+                    prev_s = g_set[(g_set["mkey"] == prev_k) & (g_set["resultado_std"] == org)][["setor","n"]].set_index("setor")["n"]
+
+                    # universo de setores conforme filtro
+                    if "(Todos)" in st.session_state["det_setores"] or len(st.session_state["det_setores"]) == 0:
+                        all_sectors = sorted(set(cur_s.index).union(set(prev_s.index)))
+                    else:
+                        filt = set(st.session_state["det_setores"])
+                        all_sectors = [s for s in sorted(set(cur_s.index).union(set(prev_s.index))) if s in filt]
+
+                    if not all_sectors:
+                        md_lines.append("  - *(sem dados de setores conforme filtro)*")
+                        continue
+
+                    cur_s = cur_s.reindex(all_sectors, fill_value=0)
+                    prev_s = prev_s.reindex(all_sectors, fill_value=0)
+                    det = pd.DataFrame({"setor": all_sectors, "n_cur": cur_s.values, "n_prev": prev_s.values})
+                    det["delta"] = det["n_cur"] - det["n_prev"]
+                    det["pct"] = det.apply(lambda r: (r["delta"] / r["n_prev"] * 100.0) if r["n_prev"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0), axis=1)
+
+                    # ordena por maior impacto absoluto (padrão intuitivo)
+                    det = det.sort_values(["delta","n_cur"], ascending=[False,False])
+
+                    for _, r in det.iterrows():
+                        # mostra também setores sem variação? sim, facilita auditoria.
+                        md_lines.append(
+                            f"  - {r['setor']}: {int(r['n_cur'])} vs {int(r['n_prev'])} "
+                            f"({_arrow(int(r['delta']))} {int(r['delta']):+d}; {_fmt_pct(r['pct'])})"
+                        )
+
+                st.markdown("\n".join(md_lines))
+
+                st.download_button(
+                    "⬇️ Baixar detalhamento (Markdown)",
+                    data="# Detalhamento por Micro-organismo\n\n" + "\n".join(md_lines) + "\n",
+                    file_name=f"detalhamento_micro_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                    mime="text/markdown",
+                    key="btn_download_detalhamento_md"
+                )
+
+except Exception as e:
+    st.caption(f"Não foi possível gerar o detalhamento: {e}")
 
 # =========================
 # Heatmap mês × setor (com filtros de setor e micro-organismo)
