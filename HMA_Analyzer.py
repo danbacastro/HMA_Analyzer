@@ -921,7 +921,7 @@ except Exception as e:
     st.caption(f"Não foi possível gerar o rank de mudança: {e}")
 
 # =========================
-# NOVO CARD — Detalhamento por Micro-organismo (Δ último vs anterior)
+# Detalhamento por Micro-organismo (Δ último vs anterior)
 # =========================
 st.subheader("🔎 Detalhamento por Micro-organismo (Δ último vs anterior)")
 
@@ -1070,6 +1070,184 @@ try:
 
 except Exception as e:
     st.caption(f"Não foi possível gerar o detalhamento: {e}")
+# =========================
+# 🚨 Alerta por Tendência Anômala (z-score) + gráfico
+# =========================
+st.header("🚨 Alerta por Tendência Anômala")
+
+# Controles do módulo
+c1, c2, c3, c4 = st.columns([1,1,1,1])
+with c1:
+    z_thr = st.number_input("Limite de alerta (z-score)", min_value=1.0, value=2.0, step=0.5, key="anomaly_zthr")
+with c2:
+    min_hist = st.number_input("Mínimo de meses de histórico", min_value=2, value=3, step=1, key="anomaly_minhist")
+with c3:
+    only_up = st.checkbox("Apenas aumentos (z>0)", value=True, key="anomaly_only_up")
+with c4:
+    topN_alerts = st.number_input("Top N alertas", min_value=1, value=5, step=1, key="anomaly_topN")
+
+# Base respeitando filtros/exclusões atuais
+anom = df_plot.copy()
+anom["resultado_std_safe"] = safe_series_strings(anom["resultado_std"])
+if not show_empty:
+    anom = anom[anom["resultado_std_safe"] != EMPTY_LABEL]
+
+# Garantir colunas de tempo
+if "ano" not in anom.columns:
+    anom["ano"] = anom["data"].dt.year
+if "mes_num" not in anom.columns:
+    anom["mes_num"] = anom["data"].dt.month
+anom = anom.dropna(subset=["ano","mes_num"])
+
+if anom.empty:
+    st.info("Sem dados disponíveis após filtros/exclusões para analisar anomalias.")
+else:
+    # Série mensal por organismo
+    anom["mkey"] = (anom["ano"].astype(int).astype(str) + "-" + anom["mes_num"].astype(int).astype(str).str.zfill(2))
+    anom["mlabel"] = anom["mes_num"].map(MESES_PT).astype(str) + "/" + anom["ano"].astype(int).astype(str)
+
+    order_m = (
+        anom[["mkey","ano","mes_num","mlabel"]]
+        .drop_duplicates()
+        .sort_values(["ano","mes_num"])
+    )
+    mkeys = order_m["mkey"].tolist()
+
+    if len(mkeys) < 2:
+        st.caption("É necessário pelo menos 2 meses no período para calcular anomalias.")
+    else:
+        last_k = mkeys[-1]
+        cur_label = order_m.iloc[-1]["mlabel"]
+
+        # contagem mensal por organismo
+        g = anom.groupby(["resultado_std_safe", "mkey"]).size().reset_index(name="n")
+
+        # métrica histórica por organismo (exclui mês atual para a média/σ)
+        hist = g[g["mkey"] != last_k].groupby("resultado_std_safe")["n"].agg(["mean","std","count"]).reset_index()
+        hist = hist.rename(columns={"mean":"media_hist", "std":"std_hist", "count":"num_meses_hist"})
+
+        # valor do último mês
+        cur = g[g["mkey"] == last_k][["resultado_std_safe","n"]].rename(columns={"n":"n_cur"})
+
+        # junta
+        merged = pd.merge(cur, hist, on="resultado_std_safe", how="left")
+        merged["media_hist"] = merged["media_hist"].fillna(0.0)
+        merged["std_hist"]   = merged["std_hist"].fillna(0.0)
+        merged["num_meses_hist"] = merged["num_meses_hist"].fillna(0).astype(int)
+
+        # z-score seguro
+        merged["z"] = (merged["n_cur"] - merged["media_hist"]) / merged["std_hist"].replace(0, np.nan)
+        merged["z"] = merged["z"].fillna(0.0)  # quando σ=0, z indefinido -> 0
+
+        # aplica filtros
+        cond_hist = merged["num_meses_hist"] >= int(min_hist)
+        cond_z = (merged["z"].abs() >= float(z_thr)) if not only_up else (merged["z"] >= float(z_thr))
+        alerts = merged[cond_hist & cond_z].copy()
+
+        # setores que mais contribuem no mês atual (Top 3 por padrão visual)
+        contrib = (
+            anom[anom["mkey"] == last_k]
+            .groupby(["resultado_std_safe","setor"])
+            .size().reset_index(name="n")
+            .sort_values(["resultado_std_safe","n"], ascending=[True, False])
+        )
+        top_contrib = contrib.groupby("resultado_std_safe").head(3)
+        top_contrib["detalhe_setor"] = top_contrib["setor"].astype(str) + " (" + top_contrib["n"].astype(int).astype(str) + ")"
+        det = top_contrib.groupby("resultado_std_safe")["detalhe_setor"].apply(lambda s: ", ".join(s)).reset_index()
+
+        alerts = pd.merge(alerts, det, on="resultado_std_safe", how="left")
+
+        # ordena por z decrescente
+        alerts = alerts.sort_values("z", ascending=False)
+
+        # tabela resumo
+        nice = alerts.copy()
+        nice["z"] = nice["z"].map(lambda x: f"{x:+.2f}σ")
+        nice["media_hist"] = nice["media_hist"].map(lambda x: f"{x:.1f}")
+        nice = nice.rename(columns={
+            "resultado_std_safe": "Micro-organismo",
+            "n_cur": f"{cur_label}",
+            "media_hist": "Média histórica",
+            "z": "z-score",
+            "detalhe_setor": "Setores mais afetados"
+        })[["Micro-organismo", f"{cur_label}", "Média histórica", "z-score", "Setores mais afetados"]]
+
+        st.subheader("Alertas")
+        if nice.empty:
+            st.success("Nenhuma anomalia detectada com os parâmetros atuais.")
+        else:
+            st.dataframe(nice.head(int(topN_alerts)), use_container_width=True)
+
+        # -------- Gráfico interativo por micro-organismo (seleção) --------
+        st.subheader("Histórico mensal (por micro-organismo)")
+        org_opts = sorted(g["resultado_std_safe"].unique().tolist())
+        sel_orgs = st.multiselect(
+            "Selecione 1 ou mais micro-organismos para visualizar",
+            options=org_opts,
+            key="anomaly_plot_orgs"
+        )
+
+        if len(sel_orgs) == 0 and not nice.empty:
+            # se nada selecionado, sugere os do alerta (top N)
+            sel_orgs = alerts["resultado_std_safe"].head(int(topN_alerts)).tolist()
+
+        if sel_orgs:
+            try:
+                import plotly.graph_objects as go
+                import plotly.express as px
+                # ordem time axis
+                cat_order = order_m["mkey"].tolist()
+                cat_labels = order_m.set_index("mkey")["mlabel"].to_dict()
+
+                for org in sel_orgs:
+                    series = g[g["resultado_std_safe"] == org][["mkey","n"]].set_index("mkey").reindex(cat_order, fill_value=0)["n"]
+                    mu = hist.set_index("resultado_std_safe").get("media_hist", pd.Series(dtype=float)).get(org, 0.0)
+                    sd = hist.set_index("resultado_std_safe").get("std_hist", pd.Series(dtype=float)).get(org, 0.0)
+
+                    fig_ts = go.Figure()
+                    # banda ±2σ
+                    if sd and sd > 0:
+                        upper = [mu + 2*sd]*len(cat_order)
+                        lower = [max(0, mu - 2*sd)]*len(cat_order)
+                        fig_ts.add_traces([
+                            go.Scatter(x=list(range(len(cat_order))), y=upper, mode="lines", line=dict(width=0), showlegend=False),
+                            go.Scatter(x=list(range(len(cat_order))), y=lower, mode="lines", fill="tonexty", name="±2σ", opacity=0.15)
+                        ])
+
+                    # média histórica (excluindo último mês)
+                    fig_ts.add_trace(go.Scatter(
+                        x=list(range(len(cat_order))), y=[mu]*len(cat_order),
+                        mode="lines", name="Média hist.", line=dict(dash="dash")
+                    ))
+
+                    # série mensal
+                    fig_ts.add_trace(go.Scatter(
+                        x=list(range(len(cat_order))), y=series.values,
+                        mode="lines+markers", name="Contagem"
+                    ))
+
+                    # marcar ponto do mês atual
+                    if last_k in series.index:
+                        idx = series.index.get_loc(last_k)
+                        fig_ts.add_trace(go.Scatter(
+                            x=[idx], y=[series.loc[last_k]],
+                            mode="markers", name="Mês atual", marker=dict(size=12, symbol="star")
+                        ))
+
+                    # eixos/rotulagem
+                    fig_ts.update_layout(
+                        title=f"{org} — histórico mensal",
+                        xaxis=dict(
+                            tickmode="array",
+                            tickvals=list(range(len(cat_order))),
+                            ticktext=[cat_labels[k] for k in cat_order],
+                        ),
+                        yaxis=dict(title="Contagem"),
+                        margin=dict(l=30,r=20,t=40,b=40),
+                    )
+                    st.plotly_chart(fig_ts, use_container_width=True, theme="streamlit")
+            except Exception:
+                st.info("Instale plotly para visualizar os gráficos (pip install plotly)")
 
 # =========================
 # Heatmap mês × setor (com filtros de setor e micro-organismo)
