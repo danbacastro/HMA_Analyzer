@@ -724,6 +724,185 @@ else:
         st.dataframe(pie_res)
 
 # =========================
+# 🧠 INSIGHTS AUTOMÁTICOS — "Modo Insights"
+# Gera um resumo textual interpretativo do período filtrado
+# =========================
+st.header("🧠 Insights Automáticos")
+
+def _fmt_pct(x):
+    try:
+        return f"{x:.0f}%"
+    except Exception:
+        return "–"
+
+def _fmt_arrow(delta):
+    return "▲" if delta > 0 else ("▼" if delta < 0 else "➖")
+
+def _month_key(ano, mes):
+    try:
+        return f"{int(ano):04d}-{int(mes):02d}"
+    except Exception:
+        return None
+
+def _month_label(ano, mes):
+    try:
+        return f"{MESES_PT[int(mes)]}/{int(ano)}"
+    except Exception:
+        return "mês/ano"
+
+# Controles locais (sem mexer na sidebar existente)
+c1, c2, c3 = st.columns([1,1,1])
+with c1:
+    abs_thr = st.number_input("Variação mínima (absoluta) para destacar", min_value=1, value=3, step=1, key="ins_abs_thr")
+with c2:
+    pct_thr = st.number_input("Variação mínima (%) para destacar", min_value=1, value=25, step=1, key="ins_pct_thr")
+with c3:
+    top_k = st.number_input("Quantos destaques (↑ e ↓)", min_value=1, value=3, step=1, key="ins_top_k")
+
+# Base para insights: respeita filtros de data e exclusões (df_plot)
+df_ins = df_plot.copy()
+
+# Segurança: normalizar rótulos vazios conforme sua flag 'show_empty'
+df_ins["resultado_std_safe"] = df_ins["resultado_std"].astype(str)
+if not show_empty:
+    df_ins = df_ins[df_ins["resultado_std_safe"] != EMPTY_LABEL]
+
+# Precisamos de colunas 'ano' e 'mes_num'
+if "ano" not in df_ins.columns:
+    df_ins["ano"] = df_ins["data"].dt.year
+if "mes_num" not in df_ins.columns:
+    df_ins["mes_num"] = df_ins["data"].dt.month
+
+df_ins = df_ins.dropna(subset=["ano","mes_num"])
+
+if df_ins.empty:
+    st.info("Sem dados para gerar insights com os filtros atuais.")
+else:
+    # Contagens por mês (geral e por categoria)
+    df_ins["mkey"] = df_ins.apply(lambda r: _month_key(r["ano"], r["mes_num"]), axis=1)
+    df_ins["mlabel"] = df_ins.apply(lambda r: _month_label(r["ano"], r["mes_num"]), axis=1)
+
+    # Ordenação cronológica
+    order_m = (
+        df_ins[["mkey","ano","mes_num","mlabel"]]
+        .drop_duplicates()
+        .dropna(subset=["mkey"])
+        .sort_values(["ano","mes_num"])
+    )
+    months = order_m["mkey"].tolist()
+    if len(months) < 1:
+        st.info("Não há meses válidos após os filtros para gerar insights.")
+    else:
+        last_m = months[-1]
+        prev_m = months[-2] if len(months) >= 2 else None
+
+        # Totais gerais (último mês vs anterior)
+        g_all = df_ins.groupby("mkey").size()
+        cur_total = int(g_all.get(last_m, 0))
+        prev_total = int(g_all.get(prev_m, 0)) if prev_m else 0
+        delta_total = cur_total - prev_total
+        pct_total = (delta_total / prev_total * 100.0) if prev_m and prev_total > 0 else (100.0 if prev_m and prev_total == 0 and cur_total > 0 else 0.0)
+
+        # Por micro-organismo (resultado_std)
+        g_org = df_ins.groupby(["mkey","resultado_std_safe"]).size().reset_index(name="n")
+        cur_org = g_org[g_org["mkey"] == last_m].set_index("resultado_std_safe")["n"] if last_m else pd.Series(dtype=int)
+        prv_org = g_org[g_org["mkey"] == prev_m].set_index("resultado_std_safe")["n"] if prev_m else pd.Series(dtype=int)
+
+        org_all = sorted(set(cur_org.index).union(set(prv_org.index)))
+        cur_org = cur_org.reindex(org_all, fill_value=0)
+        prv_org = prv_org.reindex(org_all, fill_value=0)
+
+        df_delta_org = pd.DataFrame({
+            "resultado": org_all,
+            "n_prev": prv_org.values,
+            "n_cur":  cur_org.values,
+        })
+        df_delta_org["delta"] = df_delta_org["n_cur"] - df_delta_org["n_prev"]
+        df_delta_org["pct"] = df_delta_org.apply(
+            lambda r: (r["delta"] / r["n_prev"] * 100.0) if r["n_prev"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
+            axis=1
+        )
+
+        # Filtrar “grandes mudanças”
+        highlights_up = (
+            df_delta_org[(df_delta_org["delta"] >= abs_thr) & (df_delta_org["pct"] >= pct_thr)]
+            .sort_values(["delta","n_cur"], ascending=[False,False])
+            .head(top_k)
+        )
+        highlights_down = (
+            df_delta_org[(df_delta_org["delta"] <= -abs_thr) & (df_delta_org["pct"] <= -pct_thr)]
+            .sort_values(["delta","n_prev"], ascending=[True,False])
+            .head(top_k)
+        )
+
+        # Por setor (mudança no total por setor)
+        g_set = df_ins.groupby(["mkey","setor"]).size().reset_index(name="n")
+        cur_set = g_set[g_set["mkey"] == last_m].set_index("setor")["n"] if last_m else pd.Series(dtype=int)
+        prv_set = g_set[g_set["mkey"] == prev_m].set_index("setor")["n"] if prev_m else pd.Series(dtype=int)
+        set_all = sorted(set(cur_set.index).union(set(prv_set.index)))
+        cur_set = cur_set.reindex(set_all, fill_value=0)
+        prv_set = prv_set.reindex(set_all, fill_value=0)
+
+        df_delta_set = pd.DataFrame({
+            "setor": set_all,
+            "n_prev": prv_set.values,
+            "n_cur":  cur_set.values,
+        })
+        df_delta_set["delta"] = df_delta_set["n_cur"] - df_delta_set["n_prev"]
+        df_delta_set["pct"] = df_delta_set.apply(
+            lambda r: (r["delta"] / r["n_prev"] * 100.0) if r["n_prev"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
+            axis=1
+        )
+        set_high = df_delta_set[
+            (df_delta_set["delta"].abs() >= abs_thr) & (df_delta_set["pct"].abs() >= pct_thr)
+        ].sort_values("delta", ascending=False).head(top_k)
+
+        # Rótulos legíveis
+        cur_label = order_m.loc[order_m["mkey"] == last_m, "mlabel"].iloc[0] if last_m else "mês atual"
+        prev_label = order_m.loc[order_m["mkey"] == prev_m, "mlabel"].iloc[0] if prev_m else "mês anterior"
+
+        # Construção do texto
+        lines = []
+        # 1) panorama geral
+        arrow_total = _fmt_arrow(delta_total)
+        lines.append(f"**Panorama ({cur_label} vs {prev_label})**: total de culturas **{cur_total}** ({arrow_total} {delta_total:+d}; {_fmt_pct(pct_total)}).")
+
+        # 2) destaques por micro-organismo
+        if not highlights_up.empty:
+            lines.append("**Maiores aumentos por micro-organismo:**")
+            for _, r in highlights_up.iterrows():
+                lines.append(f"- {r['resultado']}: {int(r['n_cur'])} vs {int(r['n_prev'])} ({_fmt_arrow(int(r['delta']))} {int(r['delta']):+d}; {_fmt_pct(r['pct'])})")
+        if not highlights_down.empty:
+            lines.append("**Maiores reduções por micro-organismo:**")
+            for _, r in highlights_down.iterrows():
+                lines.append(f"- {r['resultado']}: {int(r['n_cur'])} vs {int(r['n_prev'])} ({_fmt_arrow(int(r['delta']))} {int(r['delta']):+d}; {_fmt_pct(r['pct'])})")
+
+        # 3) setores com maior variação
+        if not set_high.empty:
+            lines.append("**Setores com variação relevante:**")
+            for _, r in set_high.iterrows():
+                lines.append(f"- {r['setor']}: {int(r['n_cur'])} vs {int(r['n_prev'])} ({_fmt_arrow(int(r['delta']))} {int(r['delta']):+d}; {_fmt_pct(r['pct'])})")
+
+        # Observação sobre exclusões
+        excl_note = ""
+        if len(base) != len(df_plot):
+            excl_note = " *(observação: resultados excluídos nas configurações não foram considerados nos insights)*"
+        if not show_empty:
+            excl_note += " *(rótulos vazios não foram considerados)*"
+
+        st.markdown("\n".join(lines) + excl_note)
+
+        # Download do resumo (Markdown)
+        resumo_md = "# Insights Automáticos\n\n" + "\n".join(lines) + "\n"
+        st.download_button(
+            "⬇️ Baixar resumo (Markdown)",
+            data=resumo_md,
+            file_name=f"insights_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+            mime="text/markdown",
+            key="btn_download_insights_md"
+        )
+
+# =========================
 # NOVOS GRÁFICOS (multi)
 # =========================
 
