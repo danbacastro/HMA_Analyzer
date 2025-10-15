@@ -921,36 +921,104 @@ except Exception as e:
     st.caption(f"Não foi possível gerar o rank de mudança: {e}")
 
 # =========================
-# NOVA SEÇÃO — Heatmap mês × setor
+# Heatmap mês × setor (com filtros de setor e micro-organismo)
 # =========================
 st.subheader("Heatmap Mês × Setor")
 try:
     hm = df_plot.copy()
     hm = hm.dropna(subset=["ano","mes_num"])
+
     if hm.empty:
         st.caption("Sem dados suficientes após filtros.")
     else:
-        hm["mes_rot"] = hm["mes_num"].map(MESES_PT)
-        hm["mes_ano"] = hm["mes_rot"].astype(str) + "/" + hm["ano"].astype(int).astype(str)
-        table = hm.groupby(["mes_ano","setor"]).size().reset_index(name="n")
-        # pivot com meses como linhas em ordem cronológica
-        # ordenação cronológica:
-        order_df = hm[["mes_ano","ano","mes_num"]].drop_duplicates().sort_values(["ano","mes_num"])
-        cat_order = order_df["mes_ano"].tolist()
-        pv = table.pivot_table(index="mes_ano", columns="setor", values="n", aggfunc="sum", fill_value=0)
-        pv = pv.reindex(cat_order)
-        try:
-            import plotly.express as px
-            fig_hm = px.imshow(
-                pv,
-                aspect="auto",
-                color_continuous_scale="Blues",
-                labels=dict(color="Contagem"),
+        # --- Opções de filtros (a partir do conjunto já filtrado por data/exclusões) ---
+        # Setores
+        setores_opts_hm = sorted(hm["setor"].dropna().unique().tolist())
+        setores_ui_hm = ["(Todos)"] + setores_opts_hm
+        if "hm_setores" not in st.session_state:
+            st.session_state["hm_setores"] = ["(Todos)"]
+        prev_opts_hm_set = st.session_state.get("hm_setores__opts")
+        if prev_opts_hm_set != setores_opts_hm:
+            st.session_state["hm_setores__opts"] = setores_opts_hm
+            st.session_state["hm_setores"] = ["(Todos)"]
+
+        # Micro-organismos (usa rotulagem segura e respeito ao 'show_empty')
+        org_series_all = safe_series_strings(hm["resultado_std"])
+        org_opts_hm = sorted(org_series_all.dropna().unique().tolist())
+        if not show_empty and EMPTY_LABEL in org_opts_hm:
+            org_opts_hm = [o for o in org_opts_hm if o != EMPTY_LABEL]
+        org_ui_hm = ["(Todos)"] + org_opts_hm
+        if "hm_orgs" not in st.session_state:
+            st.session_state["hm_orgs"] = ["(Todos)"]
+        prev_opts_hm_org = st.session_state.get("hm_orgs__opts")
+        if prev_opts_hm_org != org_opts_hm:
+            st.session_state["hm_orgs__opts"] = org_opts_hm
+            st.session_state["hm_orgs"] = ["(Todos)"]
+
+        col_hm_a, col_hm_b = st.columns(2)
+        with col_hm_a:
+            sel_setores_hm = st.multiselect(
+                "Filtrar setor(es) no heatmap",
+                options=setores_ui_hm,
+                key="hm_setores"
             )
-            fig_hm.update_layout(margin=dict(l=40,r=20,t=30,b=40))
-            st.plotly_chart(fig_hm, use_container_width=True, theme="streamlit")
-        except Exception:
-            st.dataframe(pv, use_container_width=True)
+            # Se selecionar "(Todos)" junto com outros, mantém só os outros
+            if "(Todos)" in sel_setores_hm and len(sel_setores_hm) > 1:
+                sel_setores_hm = [x for x in sel_setores_hm if x != "(Todos)"]
+                st.session_state["hm_setores"] = sel_setores_hm
+
+        with col_hm_b:
+            sel_orgs_hm = st.multiselect(
+                "Filtrar micro-organismo(s) no heatmap",
+                options=org_ui_hm,
+                key="hm_orgs"
+            )
+            if "(Todos)" in sel_orgs_hm and len(sel_orgs_hm) > 1:
+                sel_orgs_hm = [x for x in sel_orgs_hm if x != "(Todos)"]
+                st.session_state["hm_orgs"] = sel_orgs_hm
+
+        # --- Aplicar filtros escolhidos ao heatmap ---
+        # Filtro de setores
+        if "(Todos)" not in st.session_state["hm_setores"] and len(st.session_state["hm_setores"]) > 0:
+            hm = hm[hm["setor"].isin(st.session_state["hm_setores"])]
+
+        # Filtro de micro-organismos
+        hm = hm.copy()
+        hm["res_safe"] = safe_series_strings(hm["resultado_std"])
+        if not show_empty:
+            hm = hm[hm["res_safe"] != EMPTY_LABEL]
+        if "(Todos)" not in st.session_state["hm_orgs"] and len(st.session_state["hm_orgs"]) > 0:
+            hm = hm[hm["res_safe"].isin(st.session_state["hm_orgs"])]
+
+        # Recalcular após filtros
+        if hm.empty:
+            st.caption("Sem dados após aplicar os filtros do heatmap.")
+        else:
+            hm["mes_rot"] = hm["mes_num"].map(MESES_PT)
+            hm["mes_ano"] = hm["mes_rot"].astype(str) + "/" + hm["ano"].astype(int).astype(str)
+
+            table = hm.groupby(["mes_ano","setor"]).size().reset_index(name="n")
+
+            # Ordenação cronológica das linhas do heatmap
+            order_df = hm[["mes_ano","ano","mes_num"]].drop_duplicates().sort_values(["ano","mes_num"])
+            cat_order = order_df["mes_ano"].tolist()
+
+            pv = table.pivot_table(index="mes_ano", columns="setor", values="n", aggfunc="sum", fill_value=0)
+            pv = pv.reindex(cat_order)
+
+            try:
+                import plotly.express as px
+                fig_hm = px.imshow(
+                    pv,
+                    aspect="auto",
+                    color_continuous_scale="Blues",
+                    labels=dict(color="Contagem"),
+                )
+                fig_hm.update_layout(margin=dict(l=40, r=20, t=30, b=40))
+                st.plotly_chart(fig_hm, use_container_width=True, theme="streamlit")
+            except Exception:
+                st.dataframe(pv, use_container_width=True)
+
 except Exception as e:
     st.caption(f"Não foi possível gerar o heatmap: {e}")
 
