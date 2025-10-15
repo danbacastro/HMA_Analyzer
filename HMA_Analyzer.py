@@ -1138,21 +1138,21 @@ else:
         cur = g[g["mkey"] == last_k][["resultado_std_safe","n"]].rename(columns={"n":"n_cur"})
 
         # junta
-        merged = pd.merge(cur, hist, on="resultado_std_safe", how="left")
-        merged["media_hist"] = merged["media_hist"].fillna(0.0)
-        merged["std_hist"]   = merged["std_hist"].fillna(0.0)
-        merged["num_meses_hist"] = merged["num_meses_hist"].fillna(0).astype(int)
+        alerts = pd.merge(cur, hist, on="resultado_std_safe", how="left")
+        alerts["media_hist"] = alerts["media_hist"].fillna(0.0)
+        alerts["std_hist"]   = alerts["std_hist"].fillna(0.0)
+        alerts["num_meses_hist"] = alerts["num_meses_hist"].fillna(0).astype(int)
 
         # z-score seguro
-        merged["z"] = (merged["n_cur"] - merged["media_hist"]) / merged["std_hist"].replace(0, np.nan)
-        merged["z"] = merged["z"].fillna(0.0)  # quando σ=0, z indefinido -> 0
+        alerts["z"] = (alerts["n_cur"] - alerts["media_hist"]) / alerts["std_hist"].replace(0, np.nan)
+        alerts["z"] = alerts["z"].fillna(0.0)  # quando σ=0, z indefinido -> 0
 
         # aplica filtros de alerta
-        cond_hist = merged["num_meses_hist"] >= int(min_hist)
-        cond_z = (merged["z"].abs() >= float(z_thr)) if not only_up else (merged["z"] >= float(z_thr))
-        alerts = merged[cond_hist & cond_z].copy()
+        cond_hist = alerts["num_meses_hist"] >= int(min_hist)
+        cond_z = (alerts["z"].abs() >= float(z_thr)) if not only_up else (alerts["z"] >= float(z_thr))
+        alerts = alerts[cond_hist & cond_z].copy()
 
-        # setores que mais contribuem no mês atual (Top 3 por padrão visual)
+        # setores que mais contribuem no mês atual (Top 3)
         contrib = (
             anom[anom["mkey"] == last_k]
             .groupby(["resultado_std_safe","setor"])
@@ -1164,8 +1164,6 @@ else:
         det = top_contrib.groupby("resultado_std_safe")["detalhe_setor"].apply(lambda s: ", ".join(s)).reset_index()
 
         alerts = pd.merge(alerts, det, on="resultado_std_safe", how="left")
-
-        # ordena por z decrescente
         alerts = alerts.sort_values("z", ascending=False)
 
         # tabela resumo
@@ -1188,41 +1186,47 @@ else:
 
             # ---------- Interpretação dinâmica (formatação tipo relatório) ----------
             if not alerts.empty:
-            # até 3 para texto (mas respeita topN_alerts)
-            top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
-            # % vs média histórica (quando média>0)
-            top_for_text["pct_vs_media"] = top_for_text.apply(
-                lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
-                axis=1
-            )     
-            # número "típico" de meses históricos usados (pega o mínimo entre os alertas para ser conservador)
-            hist_meses_util = int(max(0, top_for_text["num_meses_hist"].min())) if "num_meses_hist" in top_for_text.columns else int(min_hist)       
-            # helper pluralização
-            def _plural(n, s, p):
-                return s if n == 1 else p      
-            # frase introdutória
-            n_alertas = int(len(alerts))
-            intro = (
-                f"**Foram identificados {n_alertas} "
-                f"{_plural(n_alertas, 'micro-organismo', 'micro-organismos')} com crescimento anômalo "
-                f"(maior que a média histórica de {hist_meses_util} {_plural(hist_meses_util, 'mês', 'meses')}) "
-                f"em {cur_label}:**"
-            )       
-            # bullets dos principais
-            bullets = []
-            for _, r in top_for_text.iterrows():
-                org = str(r["resultado_std_safe"])
-                pct = f"{r['pct_vs_media']:.0f}%"
-                ztx = f"{float(r['z']):+.2f}" if isinstance(r["z"], (int, float, np.floating)) else str(r["z"])
-                setores_row = det[det["resultado_std_safe"] == org]["detalhe_setor"]
-                setores_tx = setores_row.iloc[0] if not setores_row.empty else ""
-                if setores_tx:
-                    bullets.append(f"- **{org}** (↑ {pct}; z={ztx}) — setores: {setores_tx}.")
-                else:
-                    bullets.append(f"- **{org}** (↑ {pct}; z={ztx}).")
-            st.markdown(intro)
-            st.markdown("\n".join(bullets))
-        
+                # até 3 para texto (mas respeita topN_alerts)
+                top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
+
+                # % vs média histórica (quando média>0)
+                top_for_text["pct_vs_media"] = top_for_text.apply(
+                    lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
+                    axis=1
+                )
+
+                # número "típico" de meses históricos usados (pega o mínimo entre os alertas para ser conservador)
+                hist_meses_util = int(max(0, top_for_text["num_meses_hist"].min())) if "num_meses_hist" in top_for_text.columns else int(min_hist)
+
+                # helper pluralização
+                def _plural(n, s, p):
+                    return s if n == 1 else p
+
+                # frase introdutória
+                n_alertas = int(len(alerts))
+                intro = (
+                    f"**Foram identificados {n_alertas} "
+                    f"{_plural(n_alertas, 'micro-organismo', 'micro-organismos')} com crescimento anômalo "
+                    f"(maior que a média histórica de {hist_meses_util} {_plural(hist_meses_util, 'mês', 'meses')}) "
+                    f"em {cur_label}:**"
+                )
+
+                # bullets dos principais
+                bullets = []
+                for _, r in top_for_text.iterrows():
+                    org = str(r["resultado_std_safe"])
+                    pct = f"{r['pct_vs_media']:.0f}%"
+                    ztx = f"{float(r['z']):+.2f}" if isinstance(r["z"], (int, float, np.floating)) else str(r["z"])
+                    setores_row = det[det["resultado_std_safe"] == org]["detalhe_setor"]
+                    setores_tx = setores_row.iloc[0] if not setores_row.empty else ""
+                    if setores_tx:
+                        bullets.append(f"- **{org}** (↑ {pct}; z={ztx}) — setores: {setores_tx}.")
+                    else:
+                        bullets.append(f"- **{org}** (↑ {pct}; z={ztx}).")
+
+                # imprime tudo de uma vez (evita duplicação)
+                st.markdown(intro + "\n\n" + "\n".join(bullets))
+
         # -------- Gráfico interativo por micro-organismo (seleção) --------
         st.subheader("Histórico mensal (por micro-organismo)")
         org_opts = sorted(g["resultado_std_safe"].unique().tolist())
@@ -1232,9 +1236,17 @@ else:
             key="anomaly_plot_orgs"
         )
 
-        if len(sel_orgs) == 0 and not alerts.empty:
-            # se nada selecionado, sugere os do alerta (top N)
-            sel_orgs = alerts["resultado_std_safe"].head(int(topN_alerts)).tolist()
+        # Fallback robusto: se nada selecionado, sugere (1) alertas; senão (2) top do mês atual
+        if len(sel_orgs) == 0:
+            if not alerts.empty:
+                sel_orgs = alerts["resultado_std_safe"].head(int(topN_alerts)).tolist()
+            else:
+                top_cur = (
+                    anom[anom["mkey"] == last_k]
+                    .groupby("resultado_std_safe").size().sort_values(ascending=False)
+                    .head(int(topN_alerts)).index.tolist()
+                )
+                sel_orgs = top_cur
 
         if sel_orgs:
             try:
@@ -1296,7 +1308,6 @@ else:
                     st.plotly_chart(fig_ts, use_container_width=True, theme="streamlit")
             except Exception:
                 st.info("Instale plotly para visualizar os gráficos (pip install plotly)")
-
     
 # =========================
 # Heatmap mês × setor (com filtros de setor e micro-organismo)
