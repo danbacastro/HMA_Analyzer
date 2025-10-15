@@ -979,7 +979,6 @@ try:
                 sel_orgs = st.multiselect(
                     "Micro-organismo(s) para detalhar",
                     options=org_opts,
-                    default=st.session_state.get("det_orgs", []),
                     key="det_orgs"
                 )
             if "det_setores" not in st.session_state:
@@ -991,7 +990,6 @@ try:
                 sel_sets = st.multiselect(
                     "Setor(es) para detalhar",
                     options=set_ui,
-                    default=st.session_state.get("det_setores", ["(Todos)"]),
                     key="det_setores"
                 )
                 # se escolher "(Todos)" junto com outros, mantém só os outros
