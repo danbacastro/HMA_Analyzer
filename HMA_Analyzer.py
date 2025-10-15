@@ -1376,8 +1376,14 @@ except Exception as e:
 # CARDS – Tabelas com filtros por coluna
 # =========================
 
-def df_with_column_filters(df: pd.DataFrame, label: str, cols_filter: List[str], key_prefix: str, expanded: bool = False) -> pd.DataFrame:
-    with st.expander(label, expanded=True):
+def df_with_column_filters(
+    df: pd.DataFrame,
+    label: str,
+    cols_filter: List[str],
+    key_prefix: str,
+    expanded: bool = False,  # <- novo parâmetro
+) -> pd.DataFrame:
+    with st.expander(label, expanded=expanded):
         filters = {}
         for c in cols_filter:
             options = sorted(df[c].dropna().unique().tolist())
