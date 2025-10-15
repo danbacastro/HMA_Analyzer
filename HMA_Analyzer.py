@@ -1412,6 +1412,141 @@ except Exception as e:
     st.caption(f"Não foi possível gerar o heatmap: {e}")
 
 # =========================
+# LINHA DO TEMPO INTERATIVA DE EVENTOS
+# =========================
+st.header("🕑 Linha do Tempo Interativa de Eventos")
+
+try:
+    tl = df_plot.copy()
+    # garantir colunas de tempo
+    if "ano" not in tl.columns:
+        tl["ano"] = tl["data"].dt.year
+    if "mes_num" not in tl.columns:
+        tl["mes_num"] = tl["data"].dt.month
+    tl = tl.dropna(subset=["ano","mes_num"])
+
+    if tl.empty:
+        st.caption("Sem dados suficientes após filtros.")
+    else:
+        # rótulos seguros (respeitando opção de esconder '(sem informação)')
+        tl["res_safe"] = safe_series_strings(tl["resultado_std"])
+        if not show_empty:
+            tl = tl[tl["res_safe"] != EMPTY_LABEL]
+
+        # chave e rótulo de competência
+        tl["mkey"]   = tl["ano"].astype(int).astype(str) + "-" + tl["mes_num"].astype(int).astype(str).str.zfill(2)
+        tl["mlabel"] = tl["mes_num"].map(MESES_PT).astype(str) + "/" + tl["ano"].astype(int).astype(str)
+
+        # ===== Filtros da timeline (setor e micro-organismo) =====
+        col_tl1, col_tl2 = st.columns(2)
+        # setores
+        set_opts = sorted(tl["setor"].dropna().unique().tolist())
+        set_ui   = ["(Todos)"] + set_opts
+        if "tl_setores" not in st.session_state:
+            st.session_state["tl_setores"] = ["(Todos)"]
+        prev_tl_set = st.session_state.get("tl_setores__opts")
+        if prev_tl_set != set_opts:
+            st.session_state["tl_setores__opts"] = set_opts
+            st.session_state["tl_setores"] = ["(Todos)"]
+        with col_tl1:
+            sel_tl_set = st.multiselect("Filtrar setor(es) na timeline", options=set_ui, key="tl_setores")
+            if "(Todos)" in sel_tl_set and len(sel_tl_set) > 1:
+                sel_tl_set = [x for x in sel_tl_set if x != "(Todos)"]
+                st.session_state["tl_setores"] = sel_tl_set
+
+        # micro-organismos
+        org_opts = sorted(tl["res_safe"].dropna().unique().tolist())
+        org_ui   = ["(Todos)"] + org_opts
+        if "tl_orgs" not in st.session_state:
+            st.session_state["tl_orgs"] = ["(Todos)"]
+        prev_tl_org = st.session_state.get("tl_orgs__opts")
+        if prev_tl_org != org_opts:
+            st.session_state["tl_orgs__opts"] = org_opts
+            st.session_state["tl_orgs"] = ["(Todos)"]
+        with col_tl2:
+            sel_tl_org = st.multiselect("Filtrar micro-organismo(s) na timeline", options=org_ui, key="tl_orgs")
+            if "(Todos)" in sel_tl_org and len(sel_tl_org) > 1:
+                sel_tl_org = [x for x in sel_tl_org if x != "(Todos)"]
+                st.session_state["tl_orgs"] = sel_tl_org
+
+        # aplica filtros escolhidos
+        if "(Todos)" not in st.session_state["tl_setores"] and len(st.session_state["tl_setores"]) > 0:
+            tl = tl[tl["setor"].isin(st.session_state["tl_setores"])]
+        if "(Todos)" not in st.session_state["tl_orgs"] and len(st.session_state["tl_orgs"]) > 0:
+            tl = tl[tl["res_safe"].isin(st.session_state["tl_orgs"])]
+
+        if tl.empty:
+            st.caption("Sem dados após aplicar os filtros da timeline.")
+        else:
+            # agregação mensal por organismo
+            g_counts = tl.groupby(["mkey","mlabel","res_safe"]).size().reset_index(name="n")
+            # setores que contribuíram no mês/organismo
+            g_sectors = (
+                tl.groupby(["mkey","res_safe","setor"]).size().reset_index(name="n")
+                .sort_values(["mkey","res_safe","n"], ascending=[True,True,False])
+            )
+            # concatena "SETOR (n)" por mês/organismo
+            g_sectors["tag"] = g_sectors["setor"].astype(str) + " (" + g_sectors["n"].astype(int).astype(str) + ")"
+            sec_txt = g_sectors.groupby(["mkey","res_safe"])["tag"].apply(lambda s: ", ".join(s)).reset_index()
+            plot_df = pd.merge(g_counts, sec_txt, on=["mkey","res_safe"], how="left").rename(columns={"tag":"setores_txt"})
+
+            # eixo temporal: ordenar cronologicamente pelas chaves
+            order_k = (
+                tl[["mkey","ano","mes_num","mlabel"]]
+                .drop_duplicates()
+                .sort_values(["ano","mes_num"])
+            )
+            cat_order = order_k["mkey"].tolist()
+            lab_map   = order_k.set_index("mkey")["mlabel"].to_dict()
+
+            # figura: scatter com tamanho = n, cor = organismo, Y = organismo (linhas), X = tempo
+            import plotly.express as px
+            fig_tl = px.scatter(
+                plot_df,
+                x="mkey", y="res_safe", size="n",
+                color="res_safe", color_discrete_map=cmap_resultado,
+                hover_data={
+                    "mkey": False,
+                    "mlabel": True,
+                    "res_safe": True,
+                    "n": True,
+                    "setores_txt": True
+                },
+                title="Eventos por mês e micro-organismo",
+            )
+            # substituir ticks por rótulos mês/ano
+            fig_tl.update_xaxes(
+                tickmode="array",
+                tickvals=cat_order,
+                ticktext=[lab_map[k] for k in cat_order]
+            )
+            fig_tl.update_yaxes(title="Micro-organismo")
+            fig_tl.update_traces(marker_line_width=0.5, marker_line_color="#333")
+            fig_tl.update_layout(
+                legend_title_text="Micro-organismo",
+                margin=dict(l=30, r=20, t=50, b=40),
+                hoverlabel=dict(namelength=-1)
+            )
+            # tooltip mais legível
+            fig_tl.update_traces(
+                hovertemplate="<b>%{customdata[1]}</b><br>"  # mlabel
+                              "Micro-organismo: %{customdata[0]}<br>"  # res_safe
+                              "Casos: %{customdata[2]}<br>"            # n
+                              "Setores: %{customdata[3]}<extra></extra>" # setores_txt
+            )
+            st.plotly_chart(fig_tl, use_container_width=True, theme="streamlit")
+
+            # observação explicativa
+            st.caption(
+                "Cada ponto representa a contagem mensal por micro-organismo. "
+                "O **tamanho** indica o nº de culturas; a **cor** identifica o organismo; "
+                "o **tooltip** lista os setores que contribuíram naquele mês."
+            )
+
+except Exception as e:
+    st.caption(f"Não foi possível gerar a timeline: {e}")
+
+# =========================
 # CARDS – Tabelas com filtros por coluna
 # =========================
 
