@@ -14,4 +14,12 @@ plotly
 rapidfuzz
 openpyxl
 python-multipart
-
+dash
+dash-bootstrap-components
+dash-auth
+pandas
+numpy
+plotly
+openpyxl
+rapidfuzz
+gunicorn
