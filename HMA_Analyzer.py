@@ -1187,88 +1187,116 @@ else:
             st.dataframe(nice.head(int(topN_alerts)), use_container_width=True)
 
             # ---------- Interpretação dinâmica (formatação tipo relatório) ----------
-if not alerts.empty:
-    # até 3 para texto (mas respeita topN_alerts)
-    top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
-    # % vs média histórica (quando média>0)
-    top_for_text["pct_vs_media"] = top_for_text.apply(
-        lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
-        axis=1
-    )
+            if not alerts.empty:
+            # até 3 para texto (mas respeita topN_alerts)
+            top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
+            # % vs média histórica (quando média>0)
+            top_for_text["pct_vs_media"] = top_for_text.apply(
+                lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
+                axis=1
+            )     
+            # número "típico" de meses históricos usados (pega o mínimo entre os alertas para ser conservador)
+            hist_meses_util = int(max(0, top_for_text["num_meses_hist"].min())) if "num_meses_hist" in top_for_text.columns else int(min_hist)       
+            # helper pluralização
+            def _plural(n, s, p):
+                return s if n == 1 else p      
+            # frase introdutória
+            n_alertas = int(len(alerts))
+            intro = (
+                f"**Foram identificados {n_alertas} "
+                f"{_plural(n_alertas, 'micro-organismo', 'micro-organismos')} com crescimento anômalo "
+                f"(maior que a média histórica de {hist_meses_util} {_plural(hist_meses_util, 'mês', 'meses')}) "
+                f"em {cur_label}:**"
+            )       
+            # bullets dos principais
+            bullets = []
+            for _, r in top_for_text.iterrows():
+                org = str(r["resultado_std_safe"])
+                pct = f"{r['pct_vs_media']:.0f}%"
+                ztx = f"{float(r['z']):+.2f}" if isinstance(r["z"], (int, float, np.floating)) else str(r["z"])
+                setores_row = det[det["resultado_std_safe"] == org]["detalhe_setor"]
+                setores_tx = setores_row.iloc[0] if not setores_row.empty else ""
+                if setores_tx:
+                    bullets.append(f"- **{org}** (↑ {pct}; z={ztx}) — setores: {setores_tx}.")
+                else:
+                    bullets.append(f"- **{org}** (↑ {pct}; z={ztx}).")
+            st.markdown(intro)
+            st.markdown("\n".join(bullets))
+        
+        # -------- Gráfico interativo por micro-organismo (seleção) --------
+        st.subheader("Histórico mensal (por micro-organismo)")
+        org_opts = sorted(g["resultado_std_safe"].unique().tolist())
+        sel_orgs = st.multiselect(
+            "Selecione 1 ou mais micro-organismos para visualizar",
+            options=org_opts,
+            key="anomaly_plot_orgs"
+        )
 
-    # número "típico" de meses históricos usados (pega o mínimo entre os alertas para ser conservador)
-    hist_meses_util = int(max(0, top_for_text["num_meses_hist"].min())) if "num_meses_hist" in top_for_text.columns else int(min_hist)
+        if len(sel_orgs) == 0 and not alerts.empty:
+            # se nada selecionado, sugere os do alerta (top N)
+            sel_orgs = alerts["resultado_std_safe"].head(int(topN_alerts)).tolist()
 
-    # helper pluralização
-    def _plural(n, s, p):
-        return s if n == 1 else p
+        if sel_orgs:
+            try:
+                import plotly.graph_objects as go
+                # ordem time axis
+                cat_order = order_m["mkey"].tolist()
+                cat_labels = order_m.set_index("mkey")["mlabel"].to_dict()
 
-    # frase introdutória
-    n_alertas = int(len(alerts))
-    intro = (
-        f"**Foram identificados {n_alertas} "
-        f"{_plural(n_alertas, 'micro-organismo', 'micro-organismos')} com crescimento anômalo "
-        f"(maior que a média histórica de {hist_meses_util} {_plural(hist_meses_util, 'mês', 'meses')}) "
-        f"em {cur_label}:**"
-    )
+                # map de média/σ por organismo (para usar no gráfico)
+                hist_map_mu = hist.set_index("resultado_std_safe")["media_hist"].to_dict()
+                hist_map_sd = hist.set_index("resultado_std_safe")["std_hist"].to_dict()
 
-    # bullets dos principais
-    bullets = []
-    for _, r in top_for_text.iterrows():
-        org = str(r["resultado_std_safe"])
-        pct = f"{r['pct_vs_media']:.0f}%"
-        ztx = f"{float(r['z']):+.2f}" if isinstance(r["z"], (int, float, np.floating)) else str(r["z"])
-        setores_row = det[det["resultado_std_safe"] == org]["detalhe_setor"]
-        setores_tx = setores_row.iloc[0] if not setores_row.empty else ""
-        if setores_tx:
-            bullets.append(f"- **{org}** (↑ {pct}; z={ztx}) — setores: {setores_tx}.")
-        else:
-            bullets.append(f"- **{org}** (↑ {pct}; z={ztx}).")
+                for org in sel_orgs:
+                    series = g[g["resultado_std_safe"] == org][["mkey","n"]].set_index("mkey").reindex(cat_order, fill_value=0)["n"]
+                    mu = float(hist_map_mu.get(org, 0.0))
+                    sd = float(hist_map_sd.get(org, 0.0))
 
-    st.markdown(intro)
-    st.markdown("\n".join(bullets))
+                    fig_ts = go.Figure()
+                    # banda ±2σ
+                    if sd and sd > 0:
+                        upper = [mu + 2*sd]*len(cat_order)
+                        lower = [max(0, mu - 2*sd)]*len(cat_order)
+                        fig_ts.add_traces([
+                            go.Scatter(x=list(range(len(cat_order))), y=upper, mode="lines", line=dict(width=0), showlegend=False),
+                            go.Scatter(x=list(range(len(cat_order))), y=lower, mode="lines", fill="tonexty", name="±2σ", opacity=0.15)
+                        ])
 
-# ---------- Interpretação dinâmica (formatação tipo relatório) ----------
-if not alerts.empty:
-    # até 3 para texto (mas respeita topN_alerts)
-    top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
-    # % vs média histórica (quando média>0)
-    top_for_text["pct_vs_media"] = top_for_text.apply(
-        lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
-        axis=1
-    )
+                    # média histórica (excluindo mês atual)
+                    fig_ts.add_trace(go.Scatter(
+                        x=list(range(len(cat_order))), y=[mu]*len(cat_order),
+                        mode="lines", name="Média hist.", line=dict(dash="dash")
+                    ))
 
-    # número "típico" de meses históricos usados (pega o mínimo entre os alertas para ser conservador)
-    hist_meses_util = int(max(0, top_for_text["num_meses_hist"].min())) if "num_meses_hist" in top_for_text.columns else int(min_hist)
+                    # série mensal
+                    fig_ts.add_trace(go.Scatter(
+                        x=list(range(len(cat_order))), y=series.values,
+                        mode="lines+markers", name="Contagem"
+                    ))
 
-    # helper pluralização
-    def _plural(n, s, p):
-        return s if n == 1 else p
+                    # marcar ponto do mês atual
+                    if last_k in series.index:
+                        idx = series.index.get_loc(last_k)
+                        fig_ts.add_trace(go.Scatter(
+                            x=[idx], y=[series.loc[last_k]],
+                            mode="markers", name="Mês atual", marker=dict(size=12, symbol="star")
+                        ))
 
-    # frase introdutória
-    n_alertas = int(len(alerts))
-    intro = (
-        f"**Foram identificados {n_alertas} "
-        f"{_plural(n_alertas, 'micro-organismo', 'micro-organismos')} com crescimento anômalo "
-        f"(maior que a média histórica de {hist_meses_util} {_plural(hist_meses_util, 'mês', 'meses')}) "
-        f"em {cur_label}:**"
-    )
+                    # eixos/rotulagem
+                    fig_ts.update_layout(
+                        title=f"{org} — histórico mensal",
+                        xaxis=dict(
+                            tickmode="array",
+                            tickvals=list(range(len(cat_order))),
+                            ticktext=[cat_labels[k] for k in cat_order],
+                        ),
+                        yaxis=dict(title="Contagem"),
+                        margin=dict(l=30,r=20,t=40,b=40),
+                    )
+                    st.plotly_chart(fig_ts, use_container_width=True, theme="streamlit")
+            except Exception:
+                st.info("Instale plotly para visualizar os gráficos (pip install plotly)")
 
-    # bullets dos principais
-    bullets = []
-    for _, r in top_for_text.iterrows():
-        org = str(r["resultado_std_safe"])
-        pct = f"{r['pct_vs_media']:.0f}%"
-        ztx = f"{float(r['z']):+.2f}" if isinstance(r["z"], (int, float, np.floating)) else str(r["z"])
-        setores_row = det[det["resultado_std_safe"] == org]["detalhe_setor"]
-        setores_tx = setores_row.iloc[0] if not setores_row.empty else ""
-        if setores_tx:
-            bullets.append(f"- **{org}** (↑ {pct}; z={ztx}) — setores: {setores_tx}.")
-        else:
-            bullets.append(f"- **{org}** (↑ {pct}; z={ztx}).")
-
-    st.markdown(intro)
-    st.markdown("\n".join(bullets))
     
 # =========================
 # Heatmap mês × setor (com filtros de setor e micro-organismo)
