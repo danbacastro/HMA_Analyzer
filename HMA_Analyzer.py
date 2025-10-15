@@ -1186,24 +1186,47 @@ else:
         else:
             st.dataframe(nice.head(int(topN_alerts)), use_container_width=True)
 
-            # ---------- Interpretação dinâmica (em negrito) ----------
-            # monta uma frase com até 3 principais micro-organismos e seus setores mais impactados
-            top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
-            # % em relação à média histórica (quando >0)
-            top_for_text["pct_vs_media"] = top_for_text.apply(
-                lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
-                axis=1
-            )
-            parts = []
-            for _, r in top_for_text.iterrows():
-                org = str(r["resultado_std_safe"])
-                pct = f"{r['pct_vs_media']:.0f}%"
-                ztx = f"{r['z']:+.2f}" if isinstance(r["z"], (int,float,np.floating)) else str(r["z"])
-                setores = det[det["resultado_std_safe"] == org]["detalhe_setor"]
-                setores_tx = f" — setores: {setores.iloc[0]}" if not setores.empty else ""
-                parts.append(f"**{org}** (↑ {pct}; z={ztx}){setores_tx}")
-            frase = " ; ".join(parts)
-            st.markdown(f"**Interpretação:** Foram identificados **{len(alerts)}** micro-organismos com crescimento anômalo em **{cur_label}**. Principais: {frase}.")
+            # ---------- Interpretação dinâmica (formatação tipo relatório) ----------
+if not alerts.empty:
+    # até 3 para texto (mas respeita topN_alerts)
+    top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
+    # % vs média histórica (quando média>0)
+    top_for_text["pct_vs_media"] = top_for_text.apply(
+        lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
+        axis=1
+    )
+
+    # número "típico" de meses históricos usados (pega o mínimo entre os alertas para ser conservador)
+    hist_meses_util = int(max(0, top_for_text["num_meses_hist"].min())) if "num_meses_hist" in top_for_text.columns else int(min_hist)
+
+    # helper pluralização
+    def _plural(n, s, p):
+        return s if n == 1 else p
+
+    # frase introdutória
+    n_alertas = int(len(alerts))
+    intro = (
+        f"**Foram identificados {n_alertas} "
+        f"{_plural(n_alertas, 'micro-organismo', 'micro-organismos')} com crescimento anômalo "
+        f"(maior que a média histórica de {hist_meses_util} {_plural(hist_meses_util, 'mês', 'meses')}) "
+        f"em {cur_label}:**"
+    )
+
+    # bullets dos principais
+    bullets = []
+    for _, r in top_for_text.iterrows():
+        org = str(r["resultado_std_safe"])
+        pct = f"{r['pct_vs_media']:.0f}%"
+        ztx = f"{float(r['z']):+.2f}" if isinstance(r["z"], (int, float, np.floating)) else str(r["z"])
+        setores_row = det[det["resultado_std_safe"] == org]["detalhe_setor"]
+        setores_tx = setores_row.iloc[0] if not setores_row.empty else ""
+        if setores_tx:
+            bullets.append(f"- **{org}** (↑ {pct}; z={ztx}) — setores: {setores_tx}.")
+        else:
+            bullets.append(f"- **{org}** (↑ {pct}; z={ztx}).")
+
+    st.markdown(intro)
+    st.markdown("\n".join(bullets))
 
         # -------- Gráfico interativo por micro-organismo (seleção) --------
         st.subheader("Histórico mensal (por micro-organismo)")
@@ -1409,7 +1432,7 @@ seg1["resultado_std"] = safe_series_strings(seg1["resultado_std"])
 if not show_empty:
     seg1 = seg1[seg1["resultado_std"] != EMPTY_LABEL]
 seg1 = seg1.groupby(["setor","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
-_ = df_with_column_filters(seg1, "Tabela: Setor × Resultado", ["setor","resultado_std"], key_prefix="seg1")
+_ = df_with_column_filters(seg1, "Tabela: Setor × Resultado", ["setor","resultado_std"], key_prefix="seg1", expanded=False)
 
 st.subheader("Distribuições por Origem da Amostra")
 seg2 = base.copy()
@@ -1417,7 +1440,7 @@ seg2["resultado_std"] = safe_series_strings(seg2["resultado_std"])
 if not show_empty:
     seg2 = seg2[seg2["resultado_std"] != EMPTY_LABEL]
 seg2 = seg2.groupby(["tipo_amostra","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
-_ = df_with_column_filters(seg2, "Tabela: Tipo de amostra × Resultado (com filtros por coluna)", ["tipo_amostra","resultado_std"], key_prefix="seg2")
+_ = df_with_column_filters(seg2, "Tabela: Tipo de amostra × Resultado (com filtros por coluna)", ["tipo_amostra","resultado_std"], key_prefix="seg2", expanded=False)
 
 st.subheader("Distribuições por Classe de Micro-organismo")
 if base["tipo_micro"].replace("", np.nan).notna().any():
@@ -1426,7 +1449,7 @@ if base["tipo_micro"].replace("", np.nan).notna().any():
     if not show_empty:
         seg3 = seg3[seg3["resultado_std"] != EMPTY_LABEL]
     seg3 = seg3.groupby(["tipo_micro","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
-    _ = df_with_column_filters(seg3, "Tabela: Tipo de micro-organismo × Resultado", ["tipo_micro","resultado_std"], key_prefix="seg3")
+    _ = df_with_column_filters(seg3, "Tabela: Tipo de micro-organismo × Resultado", ["tipo_micro","resultado_std"], key_prefix="seg3", expanded=False)
 else:
     st.caption("Sem dados de 'tipo_micro' suficientes para esta distribuição.")
 
