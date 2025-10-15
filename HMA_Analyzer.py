@@ -1070,10 +1070,18 @@ try:
 
 except Exception as e:
     st.caption(f"Não foi possível gerar o detalhamento: {e}")
+    
 # =========================
-# 🚨 Alerta por Tendência Anômala (z-score) + gráfico
+# 🚨 Alerta por Tendência Anômala (z-score) + gráfico + interpretação
 # =========================
 st.header("🚨 Alerta por Tendência Anômala")
+
+# Observação fixa (educativa)
+st.caption(
+    "Este módulo compara o **mês atual** com a **média e o desvio-padrão** dos meses anteriores, por micro-organismo. "
+    "O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo). "
+    "A faixa sombreada nos gráficos representa **±2σ** da média histórica."
+)
 
 # Controles do módulo
 c1, c2, c3, c4 = st.columns([1,1,1,1])
@@ -1139,7 +1147,7 @@ else:
         merged["z"] = (merged["n_cur"] - merged["media_hist"]) / merged["std_hist"].replace(0, np.nan)
         merged["z"] = merged["z"].fillna(0.0)  # quando σ=0, z indefinido -> 0
 
-        # aplica filtros
+        # aplica filtros de alerta
         cond_hist = merged["num_meses_hist"] >= int(min_hist)
         cond_z = (merged["z"].abs() >= float(z_thr)) if not only_up else (merged["z"] >= float(z_thr))
         alerts = merged[cond_hist & cond_z].copy()
@@ -1178,6 +1186,25 @@ else:
         else:
             st.dataframe(nice.head(int(topN_alerts)), use_container_width=True)
 
+            # ---------- Interpretação dinâmica (em negrito) ----------
+            # monta uma frase com até 3 principais micro-organismos e seus setores mais impactados
+            top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
+            # % em relação à média histórica (quando >0)
+            top_for_text["pct_vs_media"] = top_for_text.apply(
+                lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
+                axis=1
+            )
+            parts = []
+            for _, r in top_for_text.iterrows():
+                org = str(r["resultado_std_safe"])
+                pct = f"{r['pct_vs_media']:.0f}%"
+                ztx = f"{r['z']:+.2f}" if isinstance(r["z"], (int,float,np.floating)) else str(r["z"])
+                setores = det[det["resultado_std_safe"] == org]["detalhe_setor"]
+                setores_tx = f" — setores: {setores.iloc[0]}" if not setores.empty else ""
+                parts.append(f"**{org}** (↑ {pct}; z={ztx}){setores_tx}")
+            frase = " ; ".join(parts)
+            st.markdown(f"**Interpretação:** Foram identificados **{len(alerts)}** micro-organismos com crescimento anômalo em **{cur_label}**. Principais: {frase}.")
+
         # -------- Gráfico interativo por micro-organismo (seleção) --------
         st.subheader("Histórico mensal (por micro-organismo)")
         org_opts = sorted(g["resultado_std_safe"].unique().tolist())
@@ -1187,22 +1214,25 @@ else:
             key="anomaly_plot_orgs"
         )
 
-        if len(sel_orgs) == 0 and not nice.empty:
+        if len(sel_orgs) == 0 and not alerts.empty:
             # se nada selecionado, sugere os do alerta (top N)
             sel_orgs = alerts["resultado_std_safe"].head(int(topN_alerts)).tolist()
 
         if sel_orgs:
             try:
                 import plotly.graph_objects as go
-                import plotly.express as px
                 # ordem time axis
                 cat_order = order_m["mkey"].tolist()
                 cat_labels = order_m.set_index("mkey")["mlabel"].to_dict()
 
+                # map de média/σ por organismo (para usar no gráfico)
+                hist_map_mu = hist.set_index("resultado_std_safe")["media_hist"].to_dict()
+                hist_map_sd = hist.set_index("resultado_std_safe")["std_hist"].to_dict()
+
                 for org in sel_orgs:
                     series = g[g["resultado_std_safe"] == org][["mkey","n"]].set_index("mkey").reindex(cat_order, fill_value=0)["n"]
-                    mu = hist.set_index("resultado_std_safe").get("media_hist", pd.Series(dtype=float)).get(org, 0.0)
-                    sd = hist.set_index("resultado_std_safe").get("std_hist", pd.Series(dtype=float)).get(org, 0.0)
+                    mu = float(hist_map_mu.get(org, 0.0))
+                    sd = float(hist_map_sd.get(org, 0.0))
 
                     fig_ts = go.Figure()
                     # banda ±2σ
@@ -1214,7 +1244,7 @@ else:
                             go.Scatter(x=list(range(len(cat_order))), y=lower, mode="lines", fill="tonexty", name="±2σ", opacity=0.15)
                         ])
 
-                    # média histórica (excluindo último mês)
+                    # média histórica (excluindo mês atual)
                     fig_ts.add_trace(go.Scatter(
                         x=list(range(len(cat_order))), y=[mu]*len(cat_order),
                         mode="lines", name="Média hist.", line=dict(dash="dash")
