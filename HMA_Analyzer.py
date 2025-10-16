@@ -1233,7 +1233,7 @@ else:
         sel_orgs = st.multiselect(
             "Selecione 1 ou mais micro-organismos para visualizar",
             options=org_opts,
-            default=[]
+            default=[],
             key="anomaly_plot_orgs",
         )
 
