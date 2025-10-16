@@ -1078,8 +1078,8 @@ st.header("🚨 Alerta por Tendência Anômala")
 
 # Observação fixa (educativa)
 st.caption("""
-    Este módulo compara o **mês atual** com a **média e o desvio padrão** dos meses anteriores por micro-organismo.\n
-    O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo, indicando que está abaixo ou acima de 2 desvios padrão).\n
+    Este módulo compara o **mês atual** com a **média e o desvio-padrão** dos meses anteriores por micro-organismo.\n
+    O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo, indicando que está abaixo ou acima de 2 desvios-padrão).\n
     A faixa sombreada nos gráficos representa **±2σ** da média histórica.
 """)
 
@@ -1227,89 +1227,79 @@ else:
                 # imprime tudo de uma vez (evita duplicação)
                 st.markdown(intro + "\n\n" + "\n".join(bullets))
 
-        # -------- Gráfico interativo por micro-organismo (seleção) --------
-        st.subheader("Histórico Mensal")
-        org_opts = sorted(g["resultado_std_safe"].unique().tolist())
-        sel_orgs = st.multiselect(
-            "Selecione 1 ou mais micro-organismos para visualizar",
-            options=org_opts,
-            default=[],
-            key="anomaly_plot_orgs",
-        )
+# -------- Gráfico interativo por micro-organismo (seleção) --------
+st.subheader("Histórico Mensal")
+org_opts = sorted(g["resultado_std_safe"].unique().tolist())
+sel_orgs = st.multiselect(
+    "Selecione 1 ou mais micro-organismos para visualizar",
+    options=org_opts,
+    default=[],
+    key="anomaly_plot_orgs",
+)
 
-        # Fallback robusto: se nada selecionado, sugere (1) alertas; senão (2) top do mês atual
-        if len(sel_orgs) == 0:
-            if not alerts.empty:
-                sel_orgs = alerts["resultado_std_safe"].head(int(topN_alerts)).tolist()
-            else:
-                top_cur = (
-                    anom[anom["mkey"] == last_k]
-                    .groupby("resultado_std_safe").size().sort_values(ascending=False)
-                    .head(int(topN_alerts)).index.tolist()
-                )
-                sel_orgs = top_cur
+if sel_orgs:
+    try:
+        import plotly.graph_objects as go
+        # ordem time axis
+        cat_order = order_m["mkey"].tolist()
+        cat_labels = order_m.set_index("mkey")["mlabel"].to_dict()
 
-        if sel_orgs:
-            try:
-                import plotly.graph_objects as go
-                # ordem time axis
-                cat_order = order_m["mkey"].tolist()
-                cat_labels = order_m.set_index("mkey")["mlabel"].to_dict()
+        # map de média/σ por organismo (para usar no gráfico)
+        hist_map_mu = hist.set_index("resultado_std_safe")["media_hist"].to_dict()
+        hist_map_sd = hist.set_index("resultado_std_safe")["std_hist"].to_dict()
 
-                # map de média/σ por organismo (para usar no gráfico)
-                hist_map_mu = hist.set_index("resultado_std_safe")["media_hist"].to_dict()
-                hist_map_sd = hist.set_index("resultado_std_safe")["std_hist"].to_dict()
+        for org in sel_orgs:
+            series = g[g["resultado_std_safe"] == org][["mkey","n"]].set_index("mkey").reindex(cat_order, fill_value=0)["n"]
+            mu = float(hist_map_mu.get(org, 0.0))
+            sd = float(hist_map_sd.get(org, 0.0))
 
-                for org in sel_orgs:
-                    series = g[g["resultado_std_safe"] == org][["mkey","n"]].set_index("mkey").reindex(cat_order, fill_value=0)["n"]
-                    mu = float(hist_map_mu.get(org, 0.0))
-                    sd = float(hist_map_sd.get(org, 0.0))
+            fig_ts = go.Figure()
+            # banda ±2σ
+            if sd and sd > 0:
+                upper = [mu + 2*sd]*len(cat_order)
+                lower = [max(0, mu - 2*sd)]*len(cat_order)
+                fig_ts.add_traces([
+                    go.Scatter(x=list(range(len(cat_order))), y=upper, mode="lines", line=dict(width=0), showlegend=False),
+                    go.Scatter(x=list(range(len(cat_order))), y=lower, mode="lines", fill="tonexty", name="±2σ", opacity=0.15)
+                ])
 
-                    fig_ts = go.Figure()
-                    # banda ±2σ
-                    if sd and sd > 0:
-                        upper = [mu + 2*sd]*len(cat_order)
-                        lower = [max(0, mu - 2*sd)]*len(cat_order)
-                        fig_ts.add_traces([
-                            go.Scatter(x=list(range(len(cat_order))), y=upper, mode="lines", line=dict(width=0), showlegend=False),
-                            go.Scatter(x=list(range(len(cat_order))), y=lower, mode="lines", fill="tonexty", name="±2σ", opacity=0.15)
-                        ])
+            # média histórica (excluindo mês atual)
+            fig_ts.add_trace(go.Scatter(
+                x=list(range(len(cat_order))), y=[mu]*len(cat_order),
+                mode="lines", name="Média hist.", line=dict(dash="dash")
+            ))
 
-                    # média histórica (excluindo mês atual)
-                    fig_ts.add_trace(go.Scatter(
-                        x=list(range(len(cat_order))), y=[mu]*len(cat_order),
-                        mode="lines", name="Média hist.", line=dict(dash="dash")
-                    ))
+            # série mensal
+            fig_ts.add_trace(go.Scatter(
+                x=list(range(len(cat_order))), y=series.values,
+                mode="lines+markers", name="Contagem"
+            ))
 
-                    # série mensal
-                    fig_ts.add_trace(go.Scatter(
-                        x=list(range(len(cat_order))), y=series.values,
-                        mode="lines+markers", name="Contagem"
-                    ))
+            # marcar ponto do mês atual
+            if last_k in series.index:
+                idx = series.index.get_loc(last_k)
+                fig_ts.add_trace(go.Scatter(
+                    x=[idx], y=[series.loc[last_k]],
+                    mode="markers", name="Mês atual", marker=dict(size=12, symbol="star")
+                ))
 
-                    # marcar ponto do mês atual
-                    if last_k in series.index:
-                        idx = series.index.get_loc(last_k)
-                        fig_ts.add_trace(go.Scatter(
-                            x=[idx], y=[series.loc[last_k]],
-                            mode="markers", name="Mês atual", marker=dict(size=12, symbol="star")
-                        ))
+            # eixos/rotulagem
+            fig_ts.update_layout(
+                title=f"{org} — histórico mensal",
+                xaxis=dict(
+                    tickmode="array",
+                    tickvals=list(range(len(cat_order))),
+                    ticktext=[cat_labels[k] for k in cat_order],
+                ),
+                yaxis=dict(title="Contagem"),
+                margin=dict(l=30,r=20,t=40,b=40),
+            )
+            st.plotly_chart(fig_ts, use_container_width=True, theme="streamlit")
+    except Exception:
+        st.info("Instale plotly para visualizar os gráficos (pip install plotly)")
+else:
+    st.caption("Selecione ao menos um micro-organismo para visualizar o histórico mensal.")
 
-                    # eixos/rotulagem
-                    fig_ts.update_layout(
-                        title=f"{org} — histórico mensal",
-                        xaxis=dict(
-                            tickmode="array",
-                            tickvals=list(range(len(cat_order))),
-                            ticktext=[cat_labels[k] for k in cat_order],
-                        ),
-                        yaxis=dict(title="Contagem"),
-                        margin=dict(l=30,r=20,t=40,b=40),
-                    )
-                    st.plotly_chart(fig_ts, use_container_width=True, theme="streamlit")
-            except Exception:
-                st.info("Instale plotly para visualizar os gráficos (pip install plotly)")
-    
 # =========================
 # Heatmap mês × setor (com filtros de setor e micro-organismo)
 # =========================
