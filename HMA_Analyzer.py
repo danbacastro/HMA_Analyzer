@@ -878,7 +878,7 @@ else:
         except Exception:
             st.dataframe(plot_df)
 
-        st.caption("Tabela (linhas: mês/ano; colunas: categorias selecionadas)")
+        #st.caption("Tabela (linhas: mês/ano; colunas: categorias selecionadas)")
         st.dataframe(pivot, use_container_width=True)
 
 # =========================
@@ -1078,7 +1078,7 @@ st.header("🚨 Alerta por Tendência Anômala")
 
 # Observação fixa (educativa)
 st.caption("""
-    Este módulo compara o **mês atual** com a **média e o desvio padrão** dos meses anteriores por micro-organismo.
+    Este módulo compara o **mês atual** com a **média e o desvio padrão** dos meses anteriores por micro-organismo.\n
     O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo, indicando que está abaixo ou acima de 2 desvios padrão).\n
     A faixa sombreada nos gráficos representa **±2σ** da média histórica.
 """)
@@ -1233,8 +1233,8 @@ else:
         sel_orgs = st.multiselect(
             "Selecione 1 ou mais micro-organismos para visualizar",
             options=org_opts,
+            default=[]
             key="anomaly_plot_orgs",
-            default=None
         )
 
         # Fallback robusto: se nada selecionado, sugere (1) alertas; senão (2) top do mês atual
