@@ -68,6 +68,7 @@ def require_login():
             _safe_rerun()
         else:
             st.error("Usuário ou senha inválidos.")
+            # mantém a página de login visível
     st.stop()  # impede o resto do app enquanto não logar
 
 # Chame ANTES de qualquer outra coisa do app:
@@ -174,6 +175,7 @@ def _get_palette_colors(n: int) -> List[str]:
     try:
         from plotly.colors import qualitative as q
         bank = []
+        # concatenamos várias paletas para garantir bastante cores
         bank += list(getattr(q, "Set3", []))
         bank += list(getattr(q, "Plotly", []))
         bank += list(getattr(q, "Safe", []))
@@ -186,6 +188,7 @@ def _get_palette_colors(n: int) -> List[str]:
             bank = bank[:n]
         return bank
     except Exception:
+        # fallback genérico
         base = ["#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
                 "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf"]
         if len(base) < n:
@@ -197,87 +200,38 @@ def _ensure_color_map(state_key: str, categories: List[str]) -> Dict[str, str]:
     if state_key not in st.session_state:
         st.session_state[state_key] = {}
     cmap = st.session_state[state_key]
+    # mantém cores já atribuídas
     missing = [c for c in categories if c not in cmap]
     if missing:
-        colors = _get_palette_colors(len(categories) + 5)
+        colors = _get_palette_colors(len(categories) + 5)  # margem
+        # evita reassinar cores existentes
         used = set(cmap.values())
         for cat in missing:
+            # pega a primeira cor ainda não usada
             color = next((col for col in colors if col not in used), None)
             if color is None:
+                # se esgotou, apenas cíclica
                 color = colors[len(used) % len(colors)]
             cmap[cat] = color
             used.add(color)
         st.session_state[state_key] = cmap
+    # se alguma categoria saiu, mantemos o mapeamento (para estabilidade visual)
     return cmap
 
 def color_map_for_series(series: pd.Series, state_key: str) -> Dict[str, str]:
     cats = sorted([c for c in series.dropna().astype(str).unique().tolist()])
     return _ensure_color_map(state_key, cats)
 
-# ========= Aparência global (Plotly) =========
-try:
-    import plotly.io as pio
-    if "custom_hma" not in pio.templates:
-        pio.templates["custom_hma"] = pio.templates["plotly_white"]
-    pio.templates["custom_hma"].layout.font.family = "Helvetica, Inter, system-ui, -apple-system, Segoe UI, Roboto"
-    pio.templates["custom_hma"].layout.font.size = 13
-    pio.templates["custom_hma"].layout.margin = dict(l=40, r=20, t=40, b=40)
-    pio.templates["custom_hma"].layout.legend = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
-    pio.templates.default = "custom_hma"
-except Exception:
-    pass
-
 # =========================
 # Streamlit – UI
 # =========================
 
 st.set_page_config(page_title="SCIH HMA — Analytics & Report", layout="wide")
-
-# ===== CSS Global =====
-st.markdown("""
-<style>
-/* títulos */
-h1, h2, h3 { color: #1E3A8A; }
-
-/* espaçamento do container principal */
-.block-container { padding-top: 1.2rem; }
-
-/* cabeçalho transparente */
-div[data-testid="stHeader"] { background: transparent; }
-
-/* cards suaves */
-.hma-card {
-  background: #FFFFFF;
-  border: 1px solid #E2E8F0;
-  border-radius: 12px;
-  padding: 14px 16px;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-  margin-bottom: 12px;
-}
-
-/* badge do período */
-.hma-badge {
-  padding:.5rem .75rem; border-radius:10px;
-  background:#F1F5F9; display:inline-block; font-size:0.92rem;
-  border: 1px solid #E2E8F0;
-}
-
-/* métricas (KPIs) */
-.hma-metric {
-  background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px;
-  padding:10px 12px; text-align:center; box-shadow:0 1px 3px rgba(15,23,42,.06);
-}
-.hma-metric .label { color:#64748B; font-size:0.85rem; }
-.hma-metric .value { color:#0F172A; font-size:1.4rem; font-weight:700; }
-.hma-metric .sub { color:#475569; font-size:0.8rem; }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🧫 SCIH HMA  — Analytics & Report")
 
 st.markdown(
     """
-1. Carregue a **planilha bruta** (CSV/XLSX)  
+1. Carregue a **planilha bruta** (CSV/XLSX)
 2. Carregue a **planilha de tradução** (CSV)
 
 OBS: Lembre-se de não alterar o estilo padrão das planilhas importadas no programa
@@ -391,14 +345,24 @@ raw["mes_num"] = raw["mes_num"].fillna(parsed["mes_pars"])
 
 need_fill = raw["data"].isna()
 if need_fill.any():
+    # Fallbacks seguros
     yr_fallback = default_year if default_year is not None else pd.Timestamp.today().year
+
     ano_fill = raw["ano"].astype("Int64")
     mes_fill = raw["mes_num"].astype("Int64")
     dia_fill = parsed["dia_pars"].astype("Int64")
+
+    # Preenche NAs antes de converter para int nativo
     ano_fill = ano_fill.fillna(yr_fallback)
     mes_fill = mes_fill.fillna(1)
     dia_fill = dia_fill.fillna(1)
-    parts = pd.DataFrame({"year":  ano_fill.astype(int),"month": mes_fill.astype(int),"day":   dia_fill.astype(int)})
+
+    parts = pd.DataFrame({
+        "year":  ano_fill.astype(int),
+        "month": mes_fill.astype(int),
+        "day":   dia_fill.astype(int),
+    })
+
     synth = pd.to_datetime(parts, errors="coerce")
     raw.loc[need_fill, "data"] = synth[need_fill]
 
@@ -605,7 +569,7 @@ exclude_list = exclude_placeholder.multiselect(
 base    = raw[mask_date].copy()
 df_plot = base[~safe_series_strings(base["resultado_std"]).isin(exclude_list)] if exclude_list else base
 
-# Badge do período (estilizada)
+# Badge do período
 def _format_period(sel_anos_list, sel_meses_nums):
     anos_all = sorted(raw["ano"].dropna().astype(int).unique().tolist())
     meses_all = sorted([m for m in raw["mes_num"].dropna().unique().tolist() if 1 <= m <= 12])
@@ -619,42 +583,20 @@ def _format_period(sel_anos_list, sel_meses_nums):
 
 periodo_lbl = _format_period(st.session_state.get("f_anos", []), [MESES_MAP.get(x, x) if isinstance(x, str) else x for x in st.session_state.get("f_meses", [])])
 st.markdown(
-    f'<div class="hma-badge"><b>Período ativo:</b> {periodo_lbl} • <b>Registros:</b> {len(base)}</div>',
+    f"""
+    <div style="padding:.5rem .75rem;border-radius:8px;
+               background:#F1F5F9;display:inline-block;
+               font-size:0.9rem;">
+      <b>Período ativo:</b> {periodo_lbl} • <b>Registros:</b> {len(base)}
+    </div>
+    """,
     unsafe_allow_html=True
 )
-
-# ====== KPIs rápidos (respeitam filtros) ======
-colK1, colK2, colK3 = st.columns(3)
-_total = len(df_plot)
-_unique_orgs = safe_series_strings(df_plot["resultado_std"]).nunique()
-_unique_sectors = df_plot["setor"].nunique()
-
-with colK1:
-    st.markdown(
-        f'<div class="hma-metric"><div class="label">Total de culturas</div>'
-        f'<div class="value">{_total}</div><div class="sub">após filtros</div></div>',
-        unsafe_allow_html=True
-    )
-with colK2:
-    st.markdown(
-        f'<div class="hma-metric"><div class="label">Micro-organismos únicos</div>'
-        f'<div class="value">{_unique_orgs}</div><div class="sub">considerando exclusões</div></div>',
-        unsafe_allow_html=True
-    )
-with colK3:
-    st.markdown(
-        f'<div class="hma-metric"><div class="label">Setores ativos</div>'
-        f'<div class="value">{_unique_sectors}</div><div class="sub">no período</div></div>',
-        unsafe_allow_html=True
-    )
-
-st.divider()
 
 # =========================
 # GRÁFICOS – ORDEM
 # =========================
 
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.header("📈 Resumos & Gráficos")
 
 def apply_yaxis(fig, y_max_current: int):
@@ -686,6 +628,7 @@ with col1:
 with col2:
     try:
         import plotly.express as px
+        # aplicar paleta dos resultados
         fig = px.bar(
             counts_top_f.head(top_n),
             x="resultado_padronizado", y="n",
@@ -840,12 +783,9 @@ else:
     except Exception:
         st.dataframe(pie_micro_setor)
 
-st.markdown('</div>', unsafe_allow_html=True)  # fecha card Resumos & Gráficos
-
 # =========================
 # COMPARAÇÃO MENSAL/ANUAL
 # =========================
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.header("🗓️ Comparação Mensal/Anual")
 
 if df_plot.empty:
@@ -938,22 +878,22 @@ else:
         except Exception:
             st.dataframe(plot_df)
 
+        #st.caption("Tabela (linhas: mês/ano; colunas: categorias selecionadas)")
         st.dataframe(pivot, use_container_width=True)
-
-st.markdown('</div>', unsafe_allow_html=True)  # fecha card Comparação
 
 # =========================
 # Rank de mudança mês a mês por micro-organismo
 # =========================
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.subheader("Rank de Mudança Mensal por Micro-organismo (Δ último vs anterior)")
 try:
+    # usa df_plot (com filtros/exclusões) para refletir a visão atual
     tmp = df_plot.copy()
     tmp = tmp.dropna(subset=["ano","mes_num"])
     if tmp.empty:
         st.caption("Sem dados suficientes após filtros.")
     else:
         tmp["mes_ano_key"] = tmp["ano"].astype(int).astype(str) + "-" + tmp["mes_num"].astype(int).astype(str).str.zfill(2)
+        # ordena cronologicamente
         ordered_keys = sorted(tmp["mes_ano_key"].unique().tolist())
         if len(ordered_keys) < 2:
             st.caption("É necessário pelo menos 2 meses para calcular o Δ.")
@@ -963,6 +903,7 @@ try:
             g = tmp.groupby(["mes_ano_key","resultado_std"]).size().reset_index(name="n")
             cur = g[g["mes_ano_key"] == last_key].set_index("resultado_std")["n"]
             prv = g[g["mes_ano_key"] == prev_key].set_index("resultado_std")["n"]
+            # garante presença de todas as categorias
             all_res = sorted(set(cur.index).union(set(prv.index)))
             cur = cur.reindex(all_res, fill_value=0)
             prv = prv.reindex(all_res, fill_value=0)
@@ -978,16 +919,15 @@ try:
             st.dataframe(df_rank.reset_index(drop=True), use_container_width=True)
 except Exception as e:
     st.caption(f"Não foi possível gerar o rank de mudança: {e}")
-st.markdown('</div>', unsafe_allow_html=True)  # fecha card rank
 
 # =========================
 # Detalhamento por Micro-organismo (Δ último vs anterior)
 # =========================
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.subheader("🔎 Detalhamento por Micro-organismo (Δ último vs anterior)")
 
 try:
     tmpd = df_plot.copy()
+    # garantir colunas de tempo
     if "ano" not in tmpd.columns:
         tmpd["ano"] = tmpd["data"].dt.year
     if "mes_num" not in tmpd.columns:
@@ -997,9 +937,11 @@ try:
     if tmpd.empty:
         st.caption("Sem dados suficientes após filtros.")
     else:
+        # chaves/labels de mês
         tmpd["mkey"] = (tmpd["ano"].astype(int).astype(str) + "-" + tmpd["mes_num"].astype(int).astype(str).str.zfill(2))
         tmpd["mlabel"] = tmpd["mes_num"].map(MESES_PT).astype(str) + "/" + tmpd["ano"].astype(int).astype(str)
 
+        # última e penúltima competência
         order_k = (
             tmpd[["mkey","ano","mes_num","mlabel"]]
             .drop_duplicates()
@@ -1014,18 +956,22 @@ try:
             cur_label = order_k.iloc[-1]["mlabel"]
             prev_label = order_k.iloc[-2]["mlabel"]
 
+            # opções de organismos (respeita rótulo vazio/flag)
             org_series_all = safe_series_strings(tmpd["resultado_std"])
             if not show_empty:
                 org_series_all = org_series_all[org_series_all != EMPTY_LABEL]
             org_opts = sorted(org_series_all.dropna().unique().tolist())
 
+            # opções de setores
             set_opts = sorted(tmpd["setor"].dropna().unique().tolist())
             set_ui = ["(Todos)"] + set_opts
 
+            # multiselects (com estado estável ao mudar opções)
             if "det_orgs" not in st.session_state:
                 st.session_state["det_orgs"] = []
             if "det_orgs__opts" not in st.session_state or st.session_state["det_orgs__opts"] != org_opts:
                 st.session_state["det_orgs__opts"] = org_opts
+                # mantém seleção que ainda existe
                 st.session_state["det_orgs"] = [o for o in st.session_state.get("det_orgs", []) if o in org_opts]
 
             col_do1, col_do2 = st.columns([1,1])
@@ -1046,10 +992,12 @@ try:
                     options=set_ui,
                     key="det_setores"
                 )
+                # se escolher "(Todos)" junto com outros, mantém só os outros
                 if "(Todos)" in sel_sets and len(sel_sets) > 1:
                     sel_sets = [x for x in sel_sets if x != "(Todos)"]
                     st.session_state["det_setores"] = sel_sets
 
+            # helpers de formatação
             def _fmt_pct(v):
                 try:
                     return f"{v:.0f}%"
@@ -1061,11 +1009,17 @@ try:
             if not sel_orgs:
                 st.caption("Selecione ao menos um micro-organismo para ver o detalhamento.")
             else:
+                # pré-computes por mês/organismo e por mês/organismo/setor
                 g_org = tmpd.groupby(["mkey","resultado_std"]).size().reset_index(name="n")
                 g_set = tmpd.groupby(["mkey","resultado_std","setor"]).size().reset_index(name="n")
 
+                # bloco markdown acumulado
                 md_lines = [f"**Período comparado:** {cur_label} vs {prev_label}", ""]
                 for org in sel_orgs:
+                    # mapeia safe label -> valor original (busca direta em coluna)
+                    # usamos safe_series_strings também aqui para comparar sem erro
+                    org_mask_cur = safe_series_strings(tmpd["resultado_std"]) == org
+                    # totais do organismo (meses)
                     cur_n = int(g_org[(g_org["mkey"] == last_k) & (g_org["resultado_std"] == org)]["n"].sum())
                     prev_n = int(g_org[(g_org["mkey"] == prev_k) & (g_org["resultado_std"] == org)]["n"].sum())
                     delta = cur_n - prev_n
@@ -1073,9 +1027,11 @@ try:
 
                     md_lines.append(f"- **{org}**: {cur_n} vs {prev_n} ({_arrow(delta)} {delta:+d}; {_fmt_pct(pct)})")
 
+                    # detalhamento por setor
                     cur_s = g_set[(g_set["mkey"] == last_k) & (g_set["resultado_std"] == org)][["setor","n"]].set_index("setor")["n"]
                     prev_s = g_set[(g_set["mkey"] == prev_k) & (g_set["resultado_std"] == org)][["setor","n"]].set_index("setor")["n"]
 
+                    # universo de setores conforme filtro
                     if "(Todos)" in st.session_state["det_setores"] or len(st.session_state["det_setores"]) == 0:
                         all_sectors = sorted(set(cur_s.index).union(set(prev_s.index)))
                     else:
@@ -1091,15 +1047,19 @@ try:
                     det = pd.DataFrame({"setor": all_sectors, "n_cur": cur_s.values, "n_prev": prev_s.values})
                     det["delta"] = det["n_cur"] - det["n_prev"]
                     det["pct"] = det.apply(lambda r: (r["delta"] / r["n_prev"] * 100.0) if r["n_prev"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0), axis=1)
+
+                    # ordena por maior impacto absoluto (padrão intuitivo)
                     det = det.sort_values(["delta","n_cur"], ascending=[False,False])
 
                     for _, r in det.iterrows():
+                        # mostra também setores sem variação? sim, facilita auditoria.
                         md_lines.append(
                             f"  - {r['setor']}: {int(r['n_cur'])} vs {int(r['n_prev'])} "
                             f"({_arrow(int(r['delta']))} {int(r['delta']):+d}; {_fmt_pct(r['pct'])})"
                         )
 
                 st.markdown("\n".join(md_lines))
+
                 st.download_button(
                     "⬇️ Baixar detalhamento (Markdown)",
                     data="# Detalhamento por Micro-organismo\n\n" + "\n".join(md_lines) + "\n",
@@ -1110,18 +1070,16 @@ try:
 
 except Exception as e:
     st.caption(f"Não foi possível gerar o detalhamento: {e}")
-st.markdown('</div>', unsafe_allow_html=True)  # fecha card detalhamento
-
+    
 # =========================
 # 🚨 Alerta por Tendência Anômala (z-score) + gráfico + interpretação
 # =========================
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.header("🚨 Alerta por Tendência Anômala")
 
 # Observação fixa (educativa)
 st.caption("""
-    Este módulo compara o **mês atual** com a **média e o desvio-padrão** dos meses anteriores por micro-organismo.  
-    O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo, indicando que está abaixo ou acima de 2 desvios-padrão).  
+    Este módulo compara o **mês atual** com a **média e o desvio-padrão** dos meses anteriores por micro-organismo.\n
+    O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo, indicando que está abaixo ou acima de 2 desvios-padrão).\n
     A faixa sombreada nos gráficos representa **±2σ** da média histórica.
 """)
 
@@ -1228,13 +1186,23 @@ else:
 
             # ---------- Interpretação dinâmica (formatação tipo relatório) ----------
             if not alerts.empty:
+                # até 3 para texto (mas respeita topN_alerts)
                 top_for_text = alerts.head(int(min(topN_alerts, 3))).copy()
+
+                # % vs média histórica (quando média>0)
                 top_for_text["pct_vs_media"] = top_for_text.apply(
                     lambda r: ((r["n_cur"] - r["media_hist"]) / r["media_hist"] * 100.0) if r["media_hist"] > 0 else (100.0 if r["n_cur"] > 0 else 0.0),
                     axis=1
                 )
+
+                # número "típico" de meses históricos usados (pega o mínimo entre os alertas para ser conservador)
                 hist_meses_util = int(max(0, top_for_text["num_meses_hist"].min())) if "num_meses_hist" in top_for_text.columns else int(min_hist)
-                def _plural(n, s, p): return s if n == 1 else p
+
+                # helper pluralização
+                def _plural(n, s, p):
+                    return s if n == 1 else p
+
+                # frase introdutória
                 n_alertas = int(len(alerts))
                 intro = (
                     f"**Foram identificados {n_alertas} "
@@ -1242,6 +1210,8 @@ else:
                     f"(maior que a média histórica de {hist_meses_util} {_plural(hist_meses_util, 'mês', 'meses')}) "
                     f"em {cur_label}:**"
                 )
+
+                # bullets dos principais
                 bullets = []
                 for _, r in top_for_text.iterrows():
                     org = str(r["resultado_std_safe"])
@@ -1253,97 +1223,86 @@ else:
                         bullets.append(f"- **{org}** (↑ {pct}; z={ztx}) — setores: {setores_tx}.")
                     else:
                         bullets.append(f"- **{org}** (↑ {pct}; z={ztx}).")
+
+                # imprime tudo de uma vez (evita duplicação)
                 st.markdown(intro + "\n\n" + "\n".join(bullets))
 
 # -------- Gráfico interativo por micro-organismo (seleção) --------
 st.subheader("Histórico Mensal")
-# Somente grafar quando o usuário selecionar
-if anom.empty:
-    st.caption("Sem dados disponíveis para o gráfico.")
-else:
-    # usa variáveis do bloco acima (g, hist, order_m, last_k, etc.)
+org_opts = sorted(g["resultado_std_safe"].unique().tolist())
+sel_orgs = st.multiselect(
+    "Selecione 1 ou mais micro-organismos para visualizar",
+    options=org_opts,
+    default=[],
+    key="anomaly_plot_orgs",
+)
+
+if sel_orgs:
     try:
-        g  # no-op; só para garantir que g existe
-    except NameError:
-        # se por algum motivo não existir (proteção extra), recalcula rapidamente
-        g = anom.groupby(["resultado_std_safe", "mkey"]).size().reset_index(name="n")
-        hist = g[g["mkey"] != last_k].groupby("resultado_std_safe")["n"].agg(["mean","std"]).reset_index()
-        order_m = (
-            anom[["mkey","ano","mes_num","mlabel"]]
-            .drop_duplicates()
-            .sort_values(["ano","mes_num"])
-        )
-        last_k = order_m["mkey"].tolist()[-1]
+        import plotly.graph_objects as go
+        # ordem time axis
+        cat_order = order_m["mkey"].tolist()
+        cat_labels = order_m.set_index("mkey")["mlabel"].to_dict()
 
-    org_opts = sorted(g["resultado_std_safe"].unique().tolist())
-    sel_orgs = st.multiselect(
-        "Selecione 1 ou mais micro-organismos para visualizar",
-        options=org_opts,
-        default=[],  # vazio por padrão
-        key="anomaly_plot_orgs",
-    )
+        # map de média/σ por organismo (para usar no gráfico)
+        hist_map_mu = hist.set_index("resultado_std_safe")["media_hist"].to_dict()
+        hist_map_sd = hist.set_index("resultado_std_safe")["std_hist"].to_dict()
 
-    if sel_orgs:
-        try:
-            import plotly.graph_objects as go
-            cat_order = order_m["mkey"].tolist()
-            cat_labels = order_m.set_index("mkey")["mlabel"].to_dict()
-            hist_map_mu = hist.set_index("resultado_std_safe")["mean"].to_dict() if "mean" in hist.columns else hist.set_index("resultado_std_safe")["media_hist"].to_dict()
-            hist_map_sd = hist.set_index("resultado_std_safe")["std"].to_dict()  if "std"  in hist.columns else hist.set_index("resultado_std_safe")["std_hist"].to_dict()
+        for org in sel_orgs:
+            series = g[g["resultado_std_safe"] == org][["mkey","n"]].set_index("mkey").reindex(cat_order, fill_value=0)["n"]
+            mu = float(hist_map_mu.get(org, 0.0))
+            sd = float(hist_map_sd.get(org, 0.0))
 
-            for org in sel_orgs:
-                series = g[g["resultado_std_safe"] == org][["mkey","n"]].set_index("mkey").reindex(cat_order, fill_value=0)["n"]
-                mu = float(hist_map_mu.get(org, 0.0))
-                sd = float(hist_map_sd.get(org, 0.0))
+            fig_ts = go.Figure()
+            # banda ±2σ
+            if sd and sd > 0:
+                upper = [mu + 2*sd]*len(cat_order)
+                lower = [max(0, mu - 2*sd)]*len(cat_order)
+                fig_ts.add_traces([
+                    go.Scatter(x=list(range(len(cat_order))), y=upper, mode="lines", line=dict(width=0), showlegend=False),
+                    go.Scatter(x=list(range(len(cat_order))), y=lower, mode="lines", fill="tonexty", name="±2σ", opacity=0.15)
+                ])
 
-                fig_ts = go.Figure()
-                if sd and sd > 0:
-                    upper = [mu + 2*sd]*len(cat_order)
-                    lower = [max(0, mu - 2*sd)]*len(cat_order)
-                    fig_ts.add_traces([
-                        go.Scatter(x=list(range(len(cat_order))), y=upper, mode="lines", line=dict(width=0), showlegend=False),
-                        go.Scatter(x=list(range(len(cat_order))), y=lower, mode="lines", fill="tonexty", name="±2σ", opacity=0.15)
-                    ])
+            # média histórica (excluindo mês atual)
+            fig_ts.add_trace(go.Scatter(
+                x=list(range(len(cat_order))), y=[mu]*len(cat_order),
+                mode="lines", name="Média hist.", line=dict(dash="dash")
+            ))
 
+            # série mensal
+            fig_ts.add_trace(go.Scatter(
+                x=list(range(len(cat_order))), y=series.values,
+                mode="lines+markers", name="Contagem"
+            ))
+
+            # marcar ponto do mês atual
+            if last_k in series.index:
+                idx = series.index.get_loc(last_k)
                 fig_ts.add_trace(go.Scatter(
-                    x=list(range(len(cat_order))), y=[mu]*len(cat_order),
-                    mode="lines", name="Média hist.", line=dict(dash="dash")
+                    x=[idx], y=[series.loc[last_k]],
+                    mode="markers", name="Mês atual", marker=dict(size=12, symbol="star")
                 ))
 
-                fig_ts.add_trace(go.Scatter(
-                    x=list(range(len(cat_order))), y=series.values,
-                    mode="lines+markers", name="Contagem"
-                ))
-
-                if last_k in series.index:
-                    idx = series.index.get_loc(last_k)
-                    fig_ts.add_trace(go.Scatter(
-                        x=[idx], y=[series.loc[last_k]],
-                        mode="markers", name="Mês atual", marker=dict(size=12, symbol="star")
-                    ))
-
-                fig_ts.update_layout(
-                    title=f"{org} — histórico mensal",
-                    xaxis=dict(
-                        tickmode="array",
-                        tickvals=list(range(len(cat_order))),
-                        ticktext=[cat_labels[k] for k in cat_order],
-                    ),
-                    yaxis=dict(title="Contagem"),
-                    margin=dict(l=30,r=20,t=40,b=40),
-                )
-                st.plotly_chart(fig_ts, use_container_width=True, theme="streamlit")
-        except Exception:
-            st.info("Instale plotly para visualizar os gráficos (pip install plotly)")
-    else:
-        st.caption("Selecione ao menos um micro-organismo para visualizar o histórico mensal.")
-
-st.markdown('</div>', unsafe_allow_html=True)  # fecha card Alerta/Histórico
+            # eixos/rotulagem
+            fig_ts.update_layout(
+                title=f"{org} — histórico mensal",
+                xaxis=dict(
+                    tickmode="array",
+                    tickvals=list(range(len(cat_order))),
+                    ticktext=[cat_labels[k] for k in cat_order],
+                ),
+                yaxis=dict(title="Contagem"),
+                margin=dict(l=30,r=20,t=40,b=40),
+            )
+            st.plotly_chart(fig_ts, use_container_width=True, theme="streamlit")
+    except Exception:
+        st.info("Instale plotly para visualizar os gráficos (pip install plotly)")
+else:
+    st.caption("Selecione ao menos um micro-organismo para visualizar o histórico mensal.")
 
 # =========================
 # Heatmap mês × setor (com filtros de setor e micro-organismo)
 # =========================
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.subheader("Heatmap Mês × Setor")
 try:
     hm = df_plot.copy()
@@ -1352,6 +1311,8 @@ try:
     if hm.empty:
         st.caption("Sem dados suficientes após filtros.")
     else:
+        # --- Opções de filtros (a partir do conjunto já filtrado por data/exclusões) ---
+        # Setores
         setores_opts_hm = sorted(hm["setor"].dropna().unique().tolist())
         setores_ui_hm = ["(Todos)"] + setores_opts_hm
         if "hm_setores" not in st.session_state:
@@ -1361,6 +1322,7 @@ try:
             st.session_state["hm_setores__opts"] = setores_opts_hm
             st.session_state["hm_setores"] = ["(Todos)"]
 
+        # Micro-organismos (usa rotulagem segura e respeito ao 'show_empty')
         org_series_all = safe_series_strings(hm["resultado_std"])
         org_opts_hm = sorted(org_series_all.dropna().unique().tolist())
         if not show_empty and EMPTY_LABEL in org_opts_hm:
@@ -1380,6 +1342,7 @@ try:
                 options=setores_ui_hm,
                 key="hm_setores"
             )
+            # Se selecionar "(Todos)" junto com outros, mantém só os outros
             if "(Todos)" in sel_setores_hm and len(sel_setores_hm) > 1:
                 sel_setores_hm = [x for x in sel_setores_hm if x != "(Todos)"]
                 st.session_state["hm_setores"] = sel_setores_hm
@@ -1394,9 +1357,12 @@ try:
                 sel_orgs_hm = [x for x in sel_orgs_hm if x != "(Todos)"]
                 st.session_state["hm_orgs"] = sel_orgs_hm
 
+        # --- Aplicar filtros escolhidos ao heatmap ---
+        # Filtro de setores
         if "(Todos)" not in st.session_state["hm_setores"] and len(st.session_state["hm_setores"]) > 0:
             hm = hm[hm["setor"].isin(st.session_state["hm_setores"])]
 
+        # Filtro de micro-organismos
         hm = hm.copy()
         hm["res_safe"] = safe_series_strings(hm["resultado_std"])
         if not show_empty:
@@ -1404,6 +1370,7 @@ try:
         if "(Todos)" not in st.session_state["hm_orgs"] and len(st.session_state["hm_orgs"]) > 0:
             hm = hm[hm["res_safe"].isin(st.session_state["hm_orgs"])]
 
+        # Recalcular após filtros
         if hm.empty:
             st.caption("Sem dados após aplicar os filtros do heatmap.")
         else:
@@ -1412,6 +1379,7 @@ try:
 
             table = hm.groupby(["mes_ano","setor"]).size().reset_index(name="n")
 
+            # Ordenação cronológica das linhas do heatmap
             order_df = hm[["mes_ano","ano","mes_num"]].drop_duplicates().sort_values(["ano","mes_num"])
             cat_order = order_df["mes_ano"].tolist()
 
@@ -1433,16 +1401,15 @@ try:
 
 except Exception as e:
     st.caption(f"Não foi possível gerar o heatmap: {e}")
-st.markdown('</div>', unsafe_allow_html=True)  # fecha card heatmap
 
 # =========================
 # LINHA DO TEMPO INTERATIVA DE EVENTOS
 # =========================
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.header("🕑 Linha do Tempo Interativa de Eventos")
 
 try:
     tl = df_plot.copy()
+    # garantir colunas de tempo
     if "ano" not in tl.columns:
         tl["ano"] = tl["data"].dt.year
     if "mes_num" not in tl.columns:
@@ -1452,14 +1419,18 @@ try:
     if tl.empty:
         st.caption("Sem dados suficientes após filtros.")
     else:
+        # rótulos seguros (respeitando opção de esconder '(sem informação)')
         tl["res_safe"] = safe_series_strings(tl["resultado_std"])
         if not show_empty:
             tl = tl[tl["res_safe"] != EMPTY_LABEL]
 
+        # chave e rótulo de competência
         tl["mkey"]   = tl["ano"].astype(int).astype(str) + "-" + tl["mes_num"].astype(int).astype(str).str.zfill(2)
         tl["mlabel"] = tl["mes_num"].map(MESES_PT).astype(str) + "/" + tl["ano"].astype(int).astype(str)
 
+        # ===== Filtros da timeline (setor e micro-organismo) =====
         col_tl1, col_tl2 = st.columns(2)
+        # setores
         set_opts = sorted(tl["setor"].dropna().unique().tolist())
         set_ui   = ["(Todos)"] + set_opts
         if "tl_setores" not in st.session_state:
@@ -1474,6 +1445,7 @@ try:
                 sel_tl_set = [x for x in sel_tl_set if x != "(Todos)"]
                 st.session_state["tl_setores"] = sel_tl_set
 
+        # micro-organismos
         org_opts = sorted(tl["res_safe"].dropna().unique().tolist())
         org_ui   = ["(Todos)"] + org_opts
         if "tl_orgs" not in st.session_state:
@@ -1488,6 +1460,7 @@ try:
                 sel_tl_org = [x for x in sel_tl_org if x != "(Todos)"]
                 st.session_state["tl_orgs"] = sel_tl_org
 
+        # aplica filtros escolhidos
         if "(Todos)" not in st.session_state["tl_setores"] and len(st.session_state["tl_setores"]) > 0:
             tl = tl[tl["setor"].isin(st.session_state["tl_setores"])]
         if "(Todos)" not in st.session_state["tl_orgs"] and len(st.session_state["tl_orgs"]) > 0:
@@ -1496,15 +1469,19 @@ try:
         if tl.empty:
             st.caption("Sem dados após aplicar os filtros da timeline.")
         else:
+            # agregação mensal por organismo
             g_counts = tl.groupby(["mkey","mlabel","res_safe"]).size().reset_index(name="n")
+            # setores que contribuíram no mês/organismo
             g_sectors = (
                 tl.groupby(["mkey","res_safe","setor"]).size().reset_index(name="n")
                 .sort_values(["mkey","res_safe","n"], ascending=[True,True,False])
             )
+            # concatena "SETOR (n)" por mês/organismo
             g_sectors["tag"] = g_sectors["setor"].astype(str) + " (" + g_sectors["n"].astype(int).astype(str) + ")"
             sec_txt = g_sectors.groupby(["mkey","res_safe"])["tag"].apply(lambda s: ", ".join(s)).reset_index()
             plot_df = pd.merge(g_counts, sec_txt, on=["mkey","res_safe"], how="left").rename(columns={"tag":"setores_txt"})
 
+            # eixo temporal: ordenar cronologicamente pelas chaves
             order_k = (
                 tl[["mkey","ano","mes_num","mlabel"]]
                 .drop_duplicates()
@@ -1513,6 +1490,7 @@ try:
             cat_order = order_k["mkey"].tolist()
             lab_map   = order_k.set_index("mkey")["mlabel"].to_dict()
 
+            # figura: scatter com tamanho = n, cor = organismo, Y = organismo (linhas), X = tempo
             import plotly.express as px
             fig_tl = px.scatter(
                 plot_df,
@@ -1528,6 +1506,7 @@ try:
                 labels={"mkey": "Mês"},
                 title="Eventos por mês e micro-organismo",
             )
+            # substituir ticks por rótulos mês/ano
             fig_tl.update_xaxes(
                 tickmode="array",
                 tickvals=cat_order,
@@ -1540,14 +1519,16 @@ try:
                 margin=dict(l=30, r=20, t=50, b=40),
                 hoverlabel=dict(namelength=-1)
             )
+            # tooltip mais legível
             fig_tl.update_traces(
-                hovertemplate="<b>%{customdata[1]}</b><br>"
-                              "Micro-organismo: %{customdata[0]}<br>"
-                              "Casos: %{customdata[2]}<br>"
-                              "Setores: %{customdata[3]}<extra></extra>"
+                hovertemplate="<b>%{customdata[1]}</b><br>"  # mlabel
+                              "Micro-organismo: %{customdata[0]}<br>"  # res_safe
+                              "Casos: %{customdata[2]}<br>"            # n
+                              "Setores: %{customdata[3]}<extra></extra>" # setores_txt
             )
             st.plotly_chart(fig_tl, use_container_width=True, theme="streamlit")
 
+            # observação explicativa
             st.caption(
                 "Cada ponto representa a contagem mensal por micro-organismo. "
                 "O **tamanho** indica o nº de culturas; a **cor** identifica o organismo; "
@@ -1556,17 +1537,17 @@ try:
 
 except Exception as e:
     st.caption(f"Não foi possível gerar a timeline: {e}")
-st.markdown('</div>', unsafe_allow_html=True)  # fecha card timeline
 
 # =========================
 # CARDS – Tabelas com filtros por coluna
 # =========================
+
 def df_with_column_filters(
     df: pd.DataFrame,
     label: str,
     cols_filter: List[str],
     key_prefix: str,
-    expanded: bool = False,
+    expanded: bool = False,  # <- novo parâmetro
 ) -> pd.DataFrame:
     with st.expander(label, expanded=expanded):
         filters = {}
@@ -1585,7 +1566,6 @@ def df_with_column_filters(
         st.dataframe(df[mask], use_container_width=True)
         return df[mask]
 
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.subheader("Distribuições por Segmento")
 seg1 = base.copy()
 seg1["resultado_std"] = safe_series_strings(seg1["resultado_std"])
@@ -1593,9 +1573,7 @@ if not show_empty:
     seg1 = seg1[seg1["resultado_std"] != EMPTY_LABEL]
 seg1 = seg1.groupby(["setor","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
 _ = df_with_column_filters(seg1, "Tabela: Setor × Resultado", ["setor","resultado_std"], key_prefix="seg1", expanded=False)
-st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.subheader("Distribuições por Origem da Amostra")
 seg2 = base.copy()
 seg2["resultado_std"] = safe_series_strings(seg2["resultado_std"])
@@ -1603,9 +1581,7 @@ if not show_empty:
     seg2 = seg2[seg2["resultado_std"] != EMPTY_LABEL]
 seg2 = seg2.groupby(["tipo_amostra","resultado_std"]).size().reset_index(name="n").sort_values("n", ascending=False)
 _ = df_with_column_filters(seg2, "Tabela: Tipo de amostra × Resultado (com filtros por coluna)", ["tipo_amostra","resultado_std"], key_prefix="seg2", expanded=False)
-st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
 st.subheader("Distribuições por Classe de Micro-organismo")
 if base["tipo_micro"].replace("", np.nan).notna().any():
     seg3 = base.copy()
@@ -1616,12 +1592,11 @@ if base["tipo_micro"].replace("", np.nan).notna().any():
     _ = df_with_column_filters(seg3, "Tabela: Tipo de micro-organismo × Resultado", ["tipo_micro","resultado_std"], key_prefix="seg3", expanded=False)
 else:
     st.caption("Sem dados de 'tipo_micro' suficientes para esta distribuição.")
-st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================
 # Exportações
 # =========================
-st.markdown('<div class="hma-card">', unsafe_allow_html=True)
+
 st.header("📦 Exportações")
 ordem = ["data","setor","tipo_amostra","resultado_raw","resultado_std","tipo_micro"]
 export_base = df_plot if not df_plot.empty else base
@@ -1636,6 +1611,7 @@ st.download_button(
     mime="text/csv",
 )
 
+# Template de tradução (bruto)
 if not unmatched.empty:
     tmp = unmatched[["resultado"]].copy()
     tmp.insert(1, "padronizado", "")
@@ -1648,4 +1624,3 @@ if not unmatched.empty:
 )
 
 st.caption("Planilha bruta **sem cabeçalho** (pulando 4 linhas iniciais). Índices fixos: B=Data, D=Setor, E=Tipo de amostra, F=Resultado.")
-st.markdown('</div>', unsafe_allow_html=True)
