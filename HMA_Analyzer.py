@@ -1515,7 +1515,7 @@ try:
                     "n": True,
                     "setores_txt": True
                 },
-                labels={"mkey": "Mêses"}
+                labels={"mkey": "Mês"},
                 title="Eventos por mês e micro-organismo",
             )
             # substituir ticks por rótulos mês/ano
