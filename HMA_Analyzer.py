@@ -1237,6 +1237,8 @@ sel_orgs = st.multiselect(
     key="anomaly_plot_orgs",
 )
 
+st.caption("Selecione ao menos um micro-organismo para visualizar o histórico mensal.")
+
 if sel_orgs:
     try:
         import plotly.graph_objects as go
@@ -1297,8 +1299,6 @@ if sel_orgs:
             st.plotly_chart(fig_ts, use_container_width=True, theme="streamlit")
     except Exception:
         st.info("Instale plotly para visualizar os gráficos (pip install plotly)")
-else:
-    st.caption("Selecione ao menos um micro-organismo para visualizar o histórico mensal.")
 
 # =========================
 # Heatmap mês × setor (com filtros de setor e micro-organismo)
