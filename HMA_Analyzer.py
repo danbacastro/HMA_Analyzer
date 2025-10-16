@@ -1078,11 +1078,9 @@ st.header("🚨 Alerta por Tendência Anômala")
 
 # Observação fixa (educativa)
 st.caption(
-    "Este módulo compara o **mês atual** com a **média e o desvio padrão** dos meses anteriores por micro-organismo.\n"
-    
-    "O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo, indicando que está abaixo ou acima de 2 desvios padrão).\n"
-    
-    "A faixa sombreada nos gráficos representa **±2σ** da média histórica."
+    "Este módulo compara o **mês atual** com a **média e o desvio padrão** dos meses anteriores por micro-organismo.\n
+    O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo, indicando que está abaixo ou acima de 2 desvios padrão).\n
+    A faixa sombreada nos gráficos representa **±2σ** da média histórica."
 )
 
 # Controles do módulo
