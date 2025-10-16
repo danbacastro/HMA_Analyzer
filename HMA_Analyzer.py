@@ -1078,8 +1078,10 @@ st.header("🚨 Alerta por Tendência Anômala")
 
 # Observação fixa (educativa)
 st.caption(
-    "Este módulo compara o **mês atual** com a **média e o desvio-padrão** dos meses anteriores, por micro-organismo. "
-    "O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo). "
+    "Este módulo compara o **mês atual** com a **média e o desvio padrão** dos meses anteriores por micro-organismo."
+    
+    "O **z-score** indica o quão acima/abaixo do esperado está a contagem do mês atual (≥ 2σ sugere pico anômalo, indicando que está abaixo ou acima de 2 desvios padrão). "
+    
     "A faixa sombreada nos gráficos representa **±2σ** da média histórica."
 )
 
@@ -1228,12 +1230,13 @@ else:
                 st.markdown(intro + "\n\n" + "\n".join(bullets))
 
         # -------- Gráfico interativo por micro-organismo (seleção) --------
-        st.subheader("Histórico mensal (por micro-organismo)")
+        st.subheader("Histórico Mensal")
         org_opts = sorted(g["resultado_std_safe"].unique().tolist())
         sel_orgs = st.multiselect(
             "Selecione 1 ou mais micro-organismos para visualizar",
             options=org_opts,
-            key="anomaly_plot_orgs"
+            key="anomaly_plot_orgs",
+            default=[]
         )
 
         # Fallback robusto: se nada selecionado, sugere (1) alertas; senão (2) top do mês atual
@@ -1503,7 +1506,7 @@ try:
             import plotly.express as px
             fig_tl = px.scatter(
                 plot_df,
-                x="mkey", y="res_safe", size="n",
+                x="mês", y="res_safe", size="n",
                 color="res_safe", color_discrete_map=cmap_resultado,
                 hover_data={
                     "mkey": False,
